@@ -1,0 +1,2062 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fe6000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>WindRanger móvil — Análisis de viento para tu ruta GPX</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="application-name" content="WindRanger">
+<meta name="apple-mobile-web-app-title" content="WindRanger">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{
+    --bg:#f4f5f7; --panel:#ffffff; --line:#e2e5ea; --txt:#2b2f36; --dim:#6b7280;
+    --acc:#fe6000;
+    --w0:#00e5ff; --w1:#2b5cff; --w2:#a020f0; --w3:#ff1493;
+    --st:env(safe-area-inset-top,0px);
+    --sb:env(safe-area-inset-bottom,0px);
+    --hdr:calc(50px + var(--st));
+    --vis:112px;               /* alto visible de la hoja inferior */
+    --dock:0px;                /* alto del panel de la gráfica (0 = solo mapa) */
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;
+    font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg);color:var(--txt);-webkit-text-size-adjust:100%}
+
+  /* ---------- barra superior ---------- */
+  #topbar{position:fixed;top:0;left:0;right:0;height:var(--hdr);z-index:900;
+    padding:var(--st) clamp(7px,2.4vw,11px) 0;display:flex;align-items:center;
+    gap:clamp(4px,1.5vw,7px);
+    background:var(--panel);border-bottom:1px solid var(--line);
+    box-shadow:0 1px 6px rgba(0,0,0,.06)}
+  /* el logo nunca se recorta: coge su ancho natural y es el texto el que escala */
+  .brand{flex:none;white-space:nowrap;overflow:visible;
+    font-size:clamp(13px,4.3vw,19px);line-height:1.06;font-weight:800;letter-spacing:-.02em}
+  .brand span{color:var(--acc)}
+  .brand em{display:block;font:500 clamp(7px,2.2vw,10px)/1 system-ui;color:var(--dim);
+    font-style:normal;margin-top:2px;letter-spacing:.04em;text-transform:uppercase}
+  #spacer{flex:1;min-width:0}
+  @media(max-width:345px){ .brand em{display:none} }
+  .ibtn{width:clamp(31px,8.7vw,38px);height:clamp(31px,8.7vw,38px);
+    flex:none;display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--line);background:#fff;border-radius:clamp(8px,2.6vw,10px);
+    font-size:clamp(13px,4vw,16px);color:var(--txt);padding:0;cursor:pointer}
+  .ibtn:active{background:#fff2ea;border-color:var(--acc)}
+  .ibtn.on{background:var(--acc);border-color:var(--acc);color:#fff}
+  .ibtn svg{width:56%;height:56%;display:block}
+
+  /* ---------- mapa ---------- */
+  #mapWrap{position:fixed;top:var(--hdr);left:0;right:0;bottom:var(--dock);z-index:1}
+  #map{width:100%;height:100%;background:#e9ebee}
+  body.mode-grafica #mapWrap{display:none}
+  .leaflet-container{background:#e9ebee;font:inherit}
+  .leaflet-control-attribution{font-size:9px;max-width:62vw;
+    margin-bottom:max(0px, calc(var(--vis) - 4px))!important;transition:margin .1s linear}
+  .leaflet-tooltip{font-size:12px;padding:6px 8px;border-radius:8px}
+
+  /* barra de leyenda cola → contra */
+  #windkey{position:absolute;top:8px;left:10px;right:10px;z-index:600;
+    display:none;align-items:center;justify-content:space-between;gap:8px;
+    padding:6px 13px;border-radius:99px;color:#fff;
+    font-size:11.5px;font-weight:700;letter-spacing:.02em;
+    text-shadow:0 1px 3px rgba(0,0,0,.45);
+    background:linear-gradient(90deg,var(--w0) 0%,var(--w1) 34%,var(--w2) 67%,var(--w3) 100%);
+    box-shadow:0 2px 10px rgba(0,0,0,.22);transition:transform .22s}
+  /* mientras hay aviso, la leyenda baja para que no la tape */
+  body.toasting #windkey{transform:translateY(52px)}
+
+  /* rosa de viento relativo (compacta: la mitad que la de escritorio) */
+  #rose{position:absolute;right:10px;bottom:calc(var(--vis) + 10px);z-index:600;display:none;
+    background:rgba(255,255,255,.95);border:1px solid var(--line);border-radius:11px;
+    padding:4px 5px 3px;box-shadow:0 3px 12px rgba(0,0,0,.18);text-align:center;width:64px;
+    transition:bottom .1s linear}
+  #rose h3{margin:0 0 1px;font-size:7px;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--dim);font-weight:700}
+  #rose .lbl{font-size:8px;color:var(--txt);margin-top:1px;line-height:1.35}
+  #rose .lbl b{font-size:9px}
+
+  /* botones que se retiran solos para dejar el mapa limpio */
+  #topbar .ibtn, #zoomCtl{transition:opacity .35s ease, transform .35s ease}
+  body.oculto #topbar .ibtn{opacity:0;pointer-events:none;transform:translateY(-8px)}
+  body.oculto #zoomCtl{opacity:0;pointer-events:none;transform:translateY(10px)}
+
+  /* ---------- zoom, con posibilidad de bloquearlo ---------- */
+  #zoomCtl{position:absolute;left:10px;bottom:calc(var(--vis) + 10px);z-index:600;
+    display:flex;flex-direction:column;gap:6px;transition:bottom .1s linear}
+  .zbtn{width:38px;height:38px;display:flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.96);border:1px solid var(--line);border-radius:11px;
+    font:700 20px/1 system-ui;color:var(--txt);padding:0;cursor:pointer;
+    box-shadow:0 2px 8px rgba(0,0,0,.18)}
+  .zbtn:active{background:#fff2ea;border-color:var(--acc)}
+  .zbtn:disabled{opacity:.4}
+  #zLock{flex-direction:column;gap:0;font:800 13px/1.1 system-ui}
+  #zLock i{font-style:normal;font-size:7.5px;font-weight:700;letter-spacing:.04em;opacity:.7}
+  #zLock.on{background:var(--acc);border-color:var(--acc);color:#fff}
+  #zoomPop{position:absolute;left:0;bottom:100%;margin-bottom:8px;background:#fff;
+    border:1px solid var(--line);border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.24);
+    padding:6px;display:none;min-width:132px}
+  #zoomCtl.open #zoomPop{display:block}
+  #zoomPop .zt{font:700 9px/1 system-ui;color:var(--dim);text-transform:uppercase;
+    letter-spacing:.06em;padding:4px 8px 6px}
+  #zoomPop button{display:block;width:100%;border:0;background:#fff;border-radius:8px;
+    padding:9px 10px;font-size:13.5px;font-weight:600;color:var(--txt);min-height:40px;
+    text-align:left;cursor:pointer}
+  #zoomPop button.sel{background:#fff2ea;color:var(--acc)}
+
+  /* carteles de km a meta */
+  .kmsign{position:relative;display:flex;align-items:center;gap:4px;white-space:nowrap;
+    background:#2b2f36;color:#fff;border:1.5px solid #fff;border-radius:7px;padding:3px 7px;
+    font:700 13px/1 system-ui;box-shadow:0 2px 7px rgba(0,0,0,.35)}
+  .kmsign .a{font-size:9px;line-height:1;opacity:.9;display:block}
+  .kmsign .u{font-size:9px;font-weight:600;opacity:.75;letter-spacing:.02em}
+  .kmsign::after{content:'';position:absolute;left:50%;bottom:-11px;margin-left:-5px;
+    border:5px solid transparent;border-top-color:#fff;border-top-width:6px}
+
+  /* ---------- aviso flotante ---------- */
+  /* el aviso sale abajo, justo encima de la hoja, para no tapar la leyenda de viento */
+  #toast{position:fixed;left:10px;right:10px;top:calc(var(--hdr) + 8px);z-index:950;
+    background:rgba(43,47,54,.95);color:#fff;border-radius:12px;padding:10px 13px;
+    font-size:12.5px;line-height:1.45;box-shadow:0 6px 20px rgba(0,0,0,.3);white-space:pre-line;
+    opacity:0;transform:translateY(-8px);pointer-events:none;transition:opacity .22s, transform .22s}
+  #toast.show{opacity:1;transform:none}
+
+  /* ---------- hoja inferior ---------- */
+  #sheet{position:fixed;left:0;right:0;bottom:0;height:88dvh;z-index:800;
+    background:var(--panel);border-radius:18px 18px 0 0;
+    box-shadow:0 -4px 24px rgba(0,0,0,.18);display:flex;flex-direction:column;
+    will-change:transform}
+  #sheet.anim{transition:transform .26s cubic-bezier(.22,.7,.3,1)}
+  /* con la gráfica anclada, la hoja se retira: manda el reparto mapa/gráfica */
+  body.mode-split #sheet, body.mode-grafica #sheet{transform:translateY(100%)!important}
+  /* solo el tirador captura el gesto vertical; el resto de la hoja debe poder desplazarse */
+  #grab{flex:none;padding:7px 14px 9px;cursor:grab;touch-action:none}
+  #grab .bar{width:42px;height:4px;border-radius:99px;background:#d3d8df;margin:0 auto 9px}
+  #peek{display:flex;gap:6px}
+  #peek .q{flex:1;min-width:0;background:#fafbfc;border:1px solid var(--line);border-radius:10px;
+    padding:6px 4px;text-align:center}
+  #peek .q i{display:block;font:600 9px/1.2 system-ui;font-style:normal;color:var(--dim);
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+  #peek .q b{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+  #peek.empty{display:block;font-size:12.5px;color:var(--dim);text-align:center;padding:4px 0 2px}
+
+  #tabs{flex:none;display:flex;gap:6px;padding:2px 12px 8px;border-bottom:1px solid var(--line)}
+  #tabs button{flex:1;padding:9px 2px;border:0;background:transparent;color:var(--dim);
+    font:600 12.5px system-ui;border-radius:9px;cursor:pointer}
+  #tabs button.on{background:#fff2ea;color:var(--acc)}
+  #body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;padding:12px 14px calc(22px + var(--sb));
+    touch-action:pan-y}
+  .pane{display:none}
+  .pane.on{display:block}
+
+  /* ---------- formularios ---------- */
+  label{display:block;font-size:11.5px;color:var(--dim);margin:0 0 5px;
+    text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+  input,select,button{width:100%;font:inherit;border-radius:11px;border:1px solid var(--line);
+    background:#fff;color:var(--txt);padding:11px 12px;min-height:46px}
+  select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%236b7280' stroke-width='1.8'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+  input[type=file]{display:none}
+  .filebtn{display:flex;align-items:center;justify-content:center;gap:8px;
+    border:1.5px dashed var(--acc);color:var(--acc);background:#fff8f4;border-radius:12px;
+    padding:15px;font-weight:700;font-size:14px;cursor:pointer;
+    text-transform:none;letter-spacing:normal;margin:0}
+  .filebtn:active{background:#ffeadd}
+  /* lista de capas GPX */
+  #trackList{margin-top:10px}
+  #trackList:empty{display:none}
+  .trk{display:flex;align-items:center;gap:9px;padding:9px 8px;border:1px solid var(--line);
+    border-radius:11px;margin-bottom:7px;background:#fff;cursor:pointer}
+  .trk.sel{background:#fff6f0;border-color:#ffd0b0}
+  .trk .dot{width:11px;height:11px;border-radius:99px;flex:none;box-shadow:0 0 0 2px #fff inset}
+  .trk .nm{flex:1;min-width:0;font-size:13.5px;font-weight:600;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .trk .nm em{display:block;font:500 11px/1.3 system-ui;font-style:normal;color:var(--dim);
+    margin-top:1px}
+  .trk.off .nm{opacity:.45}
+  .trk .tbtn{width:34px;height:34px;min-height:0;flex:none;padding:0;border-radius:9px;
+    border:1px solid var(--line);background:#fff;font-size:14px;line-height:1;cursor:pointer}
+  .trk .tbtn:active{background:#fff2ea;border-color:var(--acc)}
+  .trk .badge{font:700 9.5px/1 system-ui;color:var(--acc);border:1px solid #ffd0b0;
+    background:#fff;border-radius:99px;padding:5px 7px;letter-spacing:.04em;flex:none}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .fld{margin-bottom:12px}
+  button.go{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700;
+    font-size:15px;min-height:50px;cursor:pointer;margin-top:4px}
+  button.go:disabled{opacity:.45}
+  button.alt{background:#fff;color:var(--acc);border-color:var(--acc);font-weight:700;margin-top:9px}
+  button.alt:disabled{opacity:.45;color:var(--dim);border-color:var(--line)}
+  button.ghost{background:#fff;color:var(--dim);border-color:var(--line);font-weight:500;
+    font-size:13px;min-height:42px;margin-top:9px}
+  #status{font-size:12px;color:var(--dim);margin-top:11px;min-height:16px;line-height:1.45;
+    white-space:pre-line}
+
+  /* ---------- tarjetas ---------- */
+  .card{background:#fafbfc;border:1px solid var(--line);border-radius:13px;padding:12px;margin-bottom:12px}
+  .card h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:0 0 9px}
+  .kv{display:flex;justify-content:space-between;align-items:center;padding:6px 0;
+    font-size:13.5px;font-variant-numeric:tabular-nums;border-bottom:1px solid #eef0f3}
+  .kv:last-child{border-bottom:0}
+  .kv b{font-weight:700}
+  .verdict{font-size:13.5px;line-height:1.55}
+  .tag{display:inline-block;padding:4px 11px;border-radius:99px;font-size:11px;font-weight:800;
+    letter-spacing:.04em;margin-bottom:9px}
+  #seglist div{padding:10px 2px;border-bottom:1px solid var(--line);font-size:13px;line-height:1.45}
+  #seglist div:last-child{border-bottom:0}
+  #seglist div:active{background:#fff6f0}
+  .hint{font-size:11.5px;color:var(--dim);line-height:1.45;margin-top:8px}
+
+  /* ---------- gráfico anclado ---------- */
+  #chartDock{position:fixed;left:0;right:0;bottom:0;height:var(--dock);z-index:700;
+    background:#fff;border-top:1px solid var(--line);box-shadow:0 -2px 12px rgba(0,0,0,.08);
+    display:none;flex-direction:column;padding:7px 8px calc(4px + var(--sb))}
+  body.mode-split #chartDock, body.mode-grafica #chartDock{display:flex}
+  #chart{flex:1;min-height:0;width:100%;display:block;touch-action:none}
+  /* la segunda gráfica y los rótulos solo salen cuando la gráfica ocupa la pantalla */
+  #chartKm{display:none;width:100%}
+  .dockcap{display:none;font:600 9.5px/1.5 system-ui;color:var(--dim);
+    text-transform:uppercase;letter-spacing:.06em;padding:0 2px}
+  body.mode-grafica #chartKm{display:block;flex:1;min-height:0}
+  body.mode-grafica .dockcap{display:block}
+  #dockEmpty{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;
+    font-size:13px;color:var(--dim);padding:0 20px}
+  #tip{position:absolute;pointer-events:none;background:rgba(43,47,54,.95);color:#fff;
+    border-radius:8px;padding:7px 10px;font-size:11px;line-height:1.5;display:none;
+    white-space:pre;z-index:5}
+  #chartGuide{position:absolute;pointer-events:none;width:1.5px;display:none;z-index:4;
+    background:rgba(43,47,54,.35)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;
+    margin-bottom:6px;flex:none}
+  .seg button{border:0;border-radius:0;padding:7px 4px;font-size:12px;font-weight:700;
+    background:#fff;color:var(--dim);min-height:36px;cursor:pointer}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.on{color:#fff}
+
+  /* ---------- modal de capas ---------- */
+  #scrim{position:fixed;inset:0;background:rgba(20,22,26,.42);z-index:960;display:none}
+  #scrim.on{display:block}
+  #layers{position:fixed;left:0;right:0;bottom:0;z-index:970;background:#fff;
+    border-radius:18px 18px 0 0;padding:10px 14px calc(18px + var(--sb));
+    transform:translateY(102%);transition:transform .26s cubic-bezier(.22,.7,.3,1);
+    max-height:82dvh;overflow-y:auto;overscroll-behavior:contain}
+  #layers.on{transform:none}
+  #layers .bar{width:42px;height:4px;border-radius:99px;background:#d3d8df;margin:0 auto 12px}
+  #layers h3{margin:4px 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  .opt{display:flex;align-items:center;gap:11px;padding:11px 8px;border-radius:11px;
+    font-size:14.5px;cursor:pointer;border:1px solid transparent;
+    text-transform:none;letter-spacing:normal;color:var(--txt);margin:0}
+  .opt:active{background:#fff2ea}
+  .opt.sel{background:#fff6f0;border-color:#ffd9bf;font-weight:600}
+  .opt input{width:20px;height:20px;min-height:0;padding:0;margin:0;flex:none;accent-color:var(--acc)}
+</style>
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">Wind<span>Ranger</span><em id="brandSub">Viento sobre tu ruta</em></div>
+  <div id="spacer"></div>
+  <button class="ibtn" id="btnView" title="Mapa / mapa y gráfica / gráfica" aria-label="Modo de vista">
+    <svg id="viewIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round"></svg>
+  </button>
+  <button class="ibtn" id="btnGeo" title="Mi posición" aria-label="Mi posición">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <circle cx="12" cy="12" r="4.4"/><path d="M12 1.6v3.2M12 19.2v3.2M1.6 12h3.2M19.2 12h3.2"/></svg>
+  </button>
+  <button class="ibtn" id="btnFull" title="Pantalla completa" aria-label="Pantalla completa">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 9.5V4h5.5M20 9.5V4h-5.5M4 14.5V20h5.5M20 14.5V20h-5.5"/></svg>
+  </button>
+  <button class="ibtn" id="btnLayers" title="Capas y mapa de fondo" aria-label="Capas y mapa de fondo">🗺️</button>
+</header>
+
+<div id="mapWrap">
+  <div id="map"></div>
+  <div id="windkey">
+    <span><span id="k_tail">—</span> COLA</span>
+    <span>CONTRA <span id="k_head">—</span></span>
+  </div>
+  <div id="zoomCtl">
+    <div id="zoomPop">
+      <div class="zt">Bloquear zoom</div>
+      <button data-z="">Libre</button>
+      <button data-z="12">Nivel 12 · comarca</button>
+      <button data-z="14">Nivel 14 · pueblos</button>
+      <button data-z="16">Nivel 16 · calles</button>
+      <button data-z="18">Nivel 18 · detalle</button>
+    </div>
+    <button class="zbtn" id="btnFit" title="Centrar la ruta" aria-label="Centrar la ruta">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2.6" y="4.6" width="18.8" height="14.8" rx="2.4" stroke-dasharray="4 3" stroke-width="1.5"/>
+        <path d="M6.5 15.2l3.8-3.4 3.2 2.1 4-4.6"/>
+        <circle cx="6.5" cy="15.2" r="1.5" fill="currentColor" stroke="none"/>
+        <circle cx="17.5" cy="9.3" r="1.5" fill="currentColor" stroke="none"/></svg>
+    </button>
+    <button class="zbtn" id="zIn" title="Acercar" aria-label="Acercar">+</button>
+    <button class="zbtn" id="zOut" title="Alejar" aria-label="Alejar">−</button>
+    <button class="zbtn" id="zLock" title="Bloquear el zoom"><span id="zNum">—</span><i>zoom</i></button>
+  </div>
+  <div id="rose">
+    <h3>Viento rel.</h3>
+    <svg id="roseSvg" width="54" height="54" viewBox="0 0 112 112"></svg>
+    <div class="lbl" id="roseTxt"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<section id="sheet">
+  <div id="grab">
+    <div class="bar"></div>
+    <div id="peek" class="empty">Carga un GPX para empezar · desliza esta hoja hacia arriba</div>
+  </div>
+
+  <nav id="tabs">
+    <button data-p="ajustes" class="on">Ruta</button>
+    <button data-p="resumen">Resumen</button>
+    <button data-p="tramos">Tramos</button>
+  </nav>
+
+  <div id="body">
+
+    <div class="pane on" data-p="ajustes">
+      <label for="gpx">Rutas GPX</label>
+      <label class="filebtn" for="gpx"><span>＋</span><span id="fileTxt">Añadir ruta GPX</span></label>
+      <input type="file" id="gpx" accept=".gpx" multiple>
+      <div id="trackList"></div>
+
+      <div class="grid2" style="margin-top:14px">
+        <div class="fld"><label>Fecha de salida</label><input type="date" id="date"></div>
+        <div class="fld"><label>Hora</label><input type="time" id="time" value="09:00"></div>
+      </div>
+      <div class="grid2">
+        <div class="fld"><label>Media km/h</label>
+          <input type="number" id="speed" value="25" min="5" max="60" step="0.5" inputmode="decimal"></div>
+        <div class="fld"><label>Modelo</label>
+          <select id="src">
+            <option value="best_match">Automático</option>
+            <option value="ecmwf_ifs04">ECMWF</option>
+            <option value="gfs_seamless">GFS</option>
+            <option value="icon_seamless">ICON (DWD)</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="go" id="go" disabled>Analizar viento</button>
+      <button class="alt" id="pdf" disabled>Descargar informe PDF</button>
+      <button class="alt" id="install" style="display:none">📲 Instalar en la pantalla de inicio</button>
+      <button class="ghost" id="reset">Borrar datos guardados</button>
+      <div id="status"></div>
+      <div class="hint" id="installHint" style="display:none">
+        Para tenerlo como una aplicación más: menú ⋮ del navegador → «Instalar aplicación»
+        o «Añadir a pantalla de inicio».
+      </div>
+    </div>
+
+    <div class="pane" data-p="resumen">
+      <div class="card" id="verdictCard" style="display:none">
+        <h2>Veredicto</h2>
+        <div id="tagline"></div>
+        <div class="verdict" id="verdict"></div>
+      </div>
+
+      <div class="card" id="sumCard" style="display:none">
+        <h2>Resumen</h2>
+        <div class="kv"><span>Distancia</span><b id="s_dist">—</b></div>
+        <div class="kv"><span>Desnivel +</span><b id="s_gain">—</b></div>
+        <div class="kv"><span>Tiempo en movimiento</span><b id="s_dur">—</b></div>
+        <div class="kv"><span>Viento medio</span><b id="s_wind">—</b></div>
+        <div class="kv"><span>Racha máxima</span><b id="s_gust">—</b></div>
+        <div class="kv"><span>Temperatura</span><b id="s_temp">—</b></div>
+        <div class="kv"><span>Prob. lluvia máx.</span><b id="s_rain">—</b></div>
+        <div class="kv"><span>Máx. viento en contra</span><b id="s_maxhead">—</b></div>
+        <div class="kv"><span>Máx. viento lateral</span><b id="s_maxcross">—</b></div>
+        <div class="kv"><span>wImpact%</span><b id="s_watts">—</b></div>
+        <div class="kv"><span>Puntos de consulta</span><b id="s_pts">—</b></div>
+
+        <div style="height:10px;border-radius:5px;margin:12px 0 7px;
+          background:linear-gradient(90deg,var(--w0),var(--w1),var(--w2),var(--w3))"></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim)">
+          <span><b id="p_tail">—</b> cola</span>
+          <span>lateral <b id="p_cross">—</b></span>
+          <span>contra <b id="p_head">—</b></span>
+        </div>
+      </div>
+      <div class="hint" id="sumEmpty">Analiza una ruta para ver aquí el veredicto y el resumen.</div>
+    </div>
+
+    <div class="pane" data-p="tramos">
+      <div class="card" id="segCard" style="display:none">
+        <h2>Tramos clave</h2>
+        <div id="seglist"></div>
+      </div>
+      <div class="hint" id="segEmpty">Analiza una ruta para ver los tramos más castigados.
+        Toca cualquiera para centrarlo en el mapa.</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- gráfica anclada: ocupa 1/3 de la pantalla en modo mixto y todo en modo gráfica -->
+<section id="chartDock">
+  <div class="seg" id="filter">
+    <button data-f="tail">Cola</button>
+    <button data-f="all" class="on" style="background:#6b7280">Ambos</button>
+    <button data-f="head">Contra</button>
+  </div>
+  <div class="dockcap">Viento a lo largo de la ruta</div>
+  <canvas id="chart"></canvas>
+  <div class="dockcap" style="margin-top:4px">Componente kilómetro a kilómetro</div>
+  <canvas id="chartKm"></canvas>
+  <div id="dockEmpty" style="display:none">Analiza una ruta para ver aquí la gráfica del viento.</div>
+  <div id="chartGuide"></div>
+  <div id="tip"></div>
+</section>
+
+<div id="scrim"></div>
+<div id="layers">
+  <div class="bar"></div>
+  <h3>Mapa de fondo</h3>
+  <div id="baseBody"></div>
+  <h3 style="margin-top:14px">Capas sobre la ruta</h3>
+  <div id="ovlBody"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+<script>
+/* ---------- utilidades geo ---------- */
+const R = 6371000, rad = d => d*Math.PI/180, deg = r => r*180/Math.PI;
+
+function haversine(a,b){
+  const dLat=rad(b.lat-a.lat), dLon=rad(b.lon-a.lon);
+  const s=Math.sin(dLat/2)**2 + Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+function bearing(a,b){
+  const y=Math.sin(rad(b.lon-a.lon))*Math.cos(rad(b.lat));
+  const x=Math.cos(rad(a.lat))*Math.sin(rad(b.lat))-Math.sin(rad(a.lat))*Math.cos(rad(b.lat))*Math.cos(rad(b.lon-a.lon));
+  return (deg(Math.atan2(y,x))+360)%360;
+}
+const cardinal = d => ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSO','SO','OSO','O','ONO','NO','NNO'][Math.round(d/22.5)%16];
+
+/* ---------- escala de color de viento (cola → contra) ---------- */
+const SCALE = [[0,0,229,255],[0.34,43,92,255],[0.67,160,32,240],[1,255,20,147]];
+function windColor(rel){
+  const t = 1 - Math.abs(rel)/180;
+  for(let i=0;i<SCALE.length-1;i++){
+    const [p0,r0,g0,b0]=SCALE[i], [p1,r1,g1,b1]=SCALE[i+1];
+    if(t<=p1){
+      const f=(t-p0)/(p1-p0);
+      return `rgb(${Math.round(r0+(r1-r0)*f)},${Math.round(g0+(g1-g0)*f)},${Math.round(b0+(b1-b0)*f)})`;
+    }
+  }
+  return 'rgb(255,20,147)';
+}
+
+/* ---------- iconos ---------- */
+function arrowIcon(deg, color, px){
+  const d='M16 29 L16 6 M8 13 L16 4 L24 13';
+  const html=`<svg width="${px}" height="${px}" viewBox="0 0 32 32"
+      style="transform:rotate(${deg}deg);display:block">
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="${d}" stroke="#fff" stroke-width="7" stroke-opacity=".9"/>
+        <path d="${d}" stroke="${color}" stroke-width="3.4"/>
+      </g></svg>`;
+  return L.divIcon({html,className:'',iconSize:[px,px],iconAnchor:[px/2,px/2]});
+}
+function signIcon(km, hdg){
+  const html=`<div class="kmsign">
+      <span class="a" style="transform:rotate(${hdg}deg)">▲</span>
+      <span>${km}</span><span class="u">km a meta</span>
+    </div>`;
+  const w = 74 + String(km).length*8;
+  return L.divIcon({html,className:'',iconSize:[w,22],iconAnchor:[w/2,32]});
+}
+function chevronIcon(deg){
+  const d='M4.5 10.5 L8 5.5 L11.5 10.5';
+  const html=`<svg width="17" height="17" viewBox="0 0 16 16"
+      style="transform:rotate(${deg}deg);display:block">
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="${d}" stroke="#fff" stroke-width="5"/>
+        <path d="${d}" stroke="#1f2937" stroke-width="2.2"/>
+      </g></svg>`;
+  return L.divIcon({html,className:'',iconSize:[17,17],iconAnchor:[8.5,8.5]});
+}
+
+/* ---------- rosa de viento relativo ---------- */
+function drawRose(r){
+  const box=document.getElementById('rose');
+  if(!r || !roseOn){ box.style.display='none'; return; }
+  box.style.display='block';
+  const col=windColor(r.rel), rel=r.rel;
+  const d='M56 16 L56 40 M50 33 L56 41 L62 33';
+  document.getElementById('roseSvg').innerHTML=`
+    <circle cx="56" cy="56" r="46" fill="#f7f8fa" stroke="#e2e5ea"/>
+    <circle cx="56" cy="56" r="46" fill="none" stroke="${col}" stroke-width="2.5" stroke-opacity=".55"/>
+    <text x="56" y="12" text-anchor="middle" font-size="9" fill="#6b7280">marcha</text>
+    <g transform="rotate(${rel} 56 56)">
+      <g fill="none" stroke="${col}" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="${d}"/>
+      </g>
+    </g>
+    <g transform="translate(56,56)">
+      <path d="M0 -13 L8 9 L0 4 L-8 9 Z" fill="#1f2937"/>
+    </g>`;
+  // con la caja a la mitad, el texto va condensado
+  const tipo = Math.abs(rel)<60 ? 'De cara' : Math.abs(rel)>120 ? 'De cola' : 'Lateral';
+  const lado = rel>0 ? '▸ dcha' : '◂ izda';
+  document.getElementById('roseTxt').innerHTML =
+    `<b style="color:${col}">${tipo}</b> ${Math.abs(rel).toFixed(0)}°<br>`+
+    `${r.windSpeed.toFixed(0)} km/h ${cardinal(r.windDir)}<br>`+
+    (Math.abs(rel)>15 && Math.abs(rel)<165 ? lado : '&nbsp;');
+}
+
+/* ---------- estado ---------- */
+let pts=[], map, trackLayer, markerLayer, windLayer, dirLayer, signLayer;
+let analysis=null, lastRows=null, lastSum=null, roseOn=true;
+
+/* ---------- mapa + capas base ---------- */
+const ignWms = (layer, attr) => L.tileLayer.wms('https://www.ign.es/wms-inspire/'+layer.url,{
+  layers:layer.name, format:'image/png', transparent:false, version:'1.3.0',
+  attribution:attr, maxZoom:20});
+
+const baseLayers = {
+  carretera: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
+    attribution:'© OpenStreetMap, © CARTO', maxZoom:20}),
+  ign:     ignWms({url:'mapa-raster', name:'mtn_rasterizado'},          '© IGN España'),
+  pnoa:    ignWms({url:'pnoa-ma',     name:'OI.OrthoimageCoverage'},    '© PNOA IGN España'),
+  ignbase: ignWms({url:'ign-base',    name:'IGNBaseTodo'},              '© IGN España'),
+  topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',{
+    attribution:'© OpenTopoMap, © OpenStreetMap', maxZoom:17}),
+  orto: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    attribution:'Imagery © Esri, Maxar, Earthstar Geographics', maxZoom:19}),
+  osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'© OpenStreetMap', maxZoom:19})
+};
+const baseDefs = [
+  {id:'carretera', name:'Carretera (claro)'},
+  {id:'ign',       name:'IGN Mapa topográfico (MTN)'},
+  {id:'pnoa',      name:'PNOA Ortofoto'},
+  {id:'ignbase',   name:'IGN Base (callejero)'},
+  {id:'topo',      name:'Topográfico (OpenTopoMap)'},
+  {id:'orto',      name:'Ortofoto mundial (Esri)'},
+  {id:'osm',       name:'OpenStreetMap'}
+];
+const BASE_DEF = 'carretera';
+
+map = L.map('map',{zoomControl:false, tap:false, layers:[baseLayers[BASE_DEF]]}).setView([40.4,-3.7],6);
+trackLayer=L.layerGroup().addTo(map);
+windLayer =L.layerGroup().addTo(map);
+dirLayer  =L.layerGroup().addTo(map);
+signLayer =L.layerGroup().addTo(map);
+markerLayer=L.layerGroup().addTo(map);
+
+/* ---------- hoja de capas ---------- */
+const scrim=document.getElementById('scrim'),
+      layersPop=document.getElementById('layers'),
+      baseBody=document.getElementById('baseBody'),
+      ovlBody=document.getElementById('ovlBody');
+
+baseBody.innerHTML = baseDefs.map(b=>
+  `<label class="opt${b.id===BASE_DEF?' sel':''}" data-base="${b.id}">
+     <input type="radio" name="base" value="${b.id}"${b.id===BASE_DEF?' checked':''}>
+     <span>${b.name}</span></label>`).join('');
+
+const overlays=[
+  {id:'wind', name:'Flechas de viento',  layer:()=>windLayer},
+  {id:'dir',  name:'Sentido de marcha',  layer:()=>dirLayer},
+  {id:'sign', name:'Carteles km a meta', layer:()=>signLayer}
+];
+ovlBody.innerHTML = overlays.map(o=>
+  `<label class="opt sel" data-ovl="${o.id}"><input type="checkbox" checked><span>${o.name}</span></label>`
+).join('');
+ovlBody.addEventListener('change', e=>{
+  const lab=e.target.closest('label[data-ovl]'); if(!lab) return;
+  const o=overlays.find(x=>x.id===lab.dataset.ovl), on=e.target.checked;
+  lab.classList.toggle('sel',on);
+  on ? map.addLayer(o.layer()) : map.removeLayer(o.layer());
+});
+
+let baseId = BASE_DEF;
+function setBase(id){
+  if(!baseLayers[id]) return;
+  baseId = id;
+  Object.entries(baseLayers).forEach(([k,l])=>{ if(k===id) l.addTo(map); else map.removeLayer(l); });
+  baseLayers[id].bringToBack();
+  baseBody.querySelectorAll('label[data-base]').forEach(l=>l.classList.toggle('sel',l.dataset.base===id));
+  const r=baseBody.querySelector(`input[value="${id}"]`); if(r) r.checked=true;
+  applyZoomLock(zoomLock, true);          // cada fondo tiene su zoom máximo
+}
+baseBody.addEventListener('change', e=>{
+  if(e.target.name!=='base') return;
+  setBase(e.target.value);
+  closeLayers();
+  saveState();
+});
+
+function openLayers(){ scrim.classList.add('on'); layersPop.classList.add('on'); }
+function closeLayers(){ scrim.classList.remove('on'); layersPop.classList.remove('on'); }
+document.getElementById('btnLayers').addEventListener('click', openLayers);
+scrim.addEventListener('click', closeLayers);
+
+/* Centrar: la primera vez encuadra la ruta activa; si hay más capas a la vista,
+   un segundo toque seguido las encuadra todas.                               */
+let fitDoble=0;
+document.getElementById('btnFit').addEventListener('click', ()=>{
+  if(!pts.length){ setStatus('Todavía no hay ninguna ruta cargada.'); return; }
+  const otras = tracks.filter(t=>t.id!==activeId && t.on).length;
+  if(otras && Date.now()-fitDoble < 3200){
+    fitDoble=0; fitAll();
+    toast(`Encuadradas las ${otras+1} capas visibles.`, 2200);
+    return;
+  }
+  fitRoute();
+  fitDoble=Date.now();
+  toast(otras ? `«${gpxName}» centrada. Toca otra vez para encuadrar también `+
+                (otras===1 ? 'la otra capa.' : `las otras ${otras} capas.`)
+              : `«${gpxName}» centrada en pantalla.`, otras ? 3200 : 1800);
+});
+
+/* ============================================================
+   ZOOM Y BLOQUEO DE ZOOM
+   Además de acercar y alejar, se puede fijar el mapa en un nivel (12, 14, 16
+   o 18) para que no se mueva al manejarlo con una mano sobre la bici.
+   ============================================================ */
+const zoomCtl=document.getElementById('zoomCtl'),
+      zLock=document.getElementById('zLock'),
+      zNum=document.getElementById('zNum'),
+      zIn=document.getElementById('zIn'),
+      zOut=document.getElementById('zOut');
+let zoomLock=null;                                  // null = libre
+const zoomHandlers = ()=> [map.scrollWheelZoom, map.touchZoom, map.doubleClickZoom, map.boxZoom];
+const baseMax = ()=> baseLayers[baseId].options.maxZoom || 20;
+
+function updateZoomUI(){
+  zNum.textContent = map.getZoom();
+  zLock.classList.toggle('on', zoomLock!=null);
+  zLock.querySelector('i').textContent = zoomLock!=null ? 'fijo' : 'zoom';
+  zLock.title = zoomLock!=null ? `Zoom bloqueado en ${zoomLock}` : 'Bloquear el zoom';
+  zIn.disabled = zoomLock!=null || map.getZoom()>=map.getMaxZoom();
+  zOut.disabled = zoomLock!=null || map.getZoom()<=map.getMinZoom();
+  zoomCtl.querySelectorAll('#zoomPop button').forEach(b=>
+    b.classList.toggle('sel', (b.dataset.z||'') === (zoomLock==null?'':String(zoomLock))));
+}
+
+function applyZoomLock(z, quiet){
+  if(z==null){
+    zoomLock=null;
+    map.setMinZoom(3); map.setMaxZoom(baseMax());
+    zoomHandlers().forEach(h=> h && h.enable());
+    if(!quiet) toast('Zoom libre.', 2000);
+  }else{
+    const zz=Math.min(z, baseMax());
+    zoomLock=zz;
+    map.setMinZoom(zz); map.setMaxZoom(zz);
+    if(map.getZoom()!==zz) map.setZoom(zz);
+    zoomHandlers().forEach(h=> h && h.disable());
+    if(!quiet) toast(zz===z ? `Zoom bloqueado en el nivel ${zz}.`
+                            : `Este mapa de fondo no pasa del nivel ${zz}: bloqueado ahí.`, 2600);
+  }
+  updateZoomUI();
+}
+
+zIn .addEventListener('click', ()=>{ map.zoomIn();  });
+zOut.addEventListener('click', ()=>{ map.zoomOut(); });
+zLock.addEventListener('click', e=>{ e.stopPropagation(); zoomCtl.classList.toggle('open'); });
+document.getElementById('zoomPop').addEventListener('click', e=>{
+  const b=e.target.closest('button[data-z]'); if(!b) return;
+  applyZoomLock(b.dataset.z ? +b.dataset.z : null);
+  zoomCtl.classList.remove('open');
+  saveState();
+});
+document.addEventListener('click', e=>{ if(!zoomCtl.contains(e.target)) zoomCtl.classList.remove('open'); });
+map.on('zoomend', updateZoomUI);
+
+/* ============================================================
+   MI POSICIÓN
+   Sitúa el GPS del móvil sobre la ruta: a qué distancia del trazado estás,
+   por qué kilómetro vas, cuánto falta y qué viento toca en ese punto.
+   Necesita https (o localhost); por file:// el navegador no da la posición.
+   ============================================================ */
+const locLayer = L.layerGroup().addTo(map);
+const btnGeo = document.getElementById('btnGeo');
+let geoWatch=null, geoPanned=false;
+const GEO_OPT = {enableHighAccuracy:true, timeout:15000, maximumAge:10000};
+
+// punto del trazado más cercano a una coordenada
+function nearestOnRoute(lat, lon){
+  if(!pts.length) return null;
+  let best=null;
+  for(let i=0;i<pts.length;i++){
+    const d=haversine({lat,lon}, pts[i]);
+    if(!best || d<best.d) best={d, i, p:pts[i]};
+  }
+  return best;
+}
+
+function describeOnRoute(lat, lon, acc){
+  const near = nearestOnRoute(lat, lon);
+  if(!near) return `Posición localizada (±${Math.round(acc)} m). Carga un GPX para situarte en la ruta.`;
+
+  const total = pts.at(-1).d, rest = total - near.p.d;
+  let txt = `Estás a ${near.d<1000 ? Math.round(near.d)+' m' : (near.d/1000).toFixed(1)+' km'} del trazado · `+
+            `km ${(near.p.d/1000).toFixed(1)} de ${(total/1000).toFixed(1)} · faltan ${(rest/1000).toFixed(1)} km`;
+
+  if(lastRows && lastRows.length){
+    const r = lastRows.reduce((a,b)=> Math.abs(b.i-near.i)<Math.abs(a.i-near.i)?b:a);
+    const speed = +document.getElementById('speed').value || lastSum.speed;
+    const h = rest/1000/speed;                      // horas que quedan a esa media
+    txt += `\nViento ${r.windSpeed.toFixed(0)} km/h del ${cardinal(r.windDir)}: `+
+           `${r.head>0?'en contra':'de cola'} ${Math.abs(r.head).toFixed(0)} · lateral ${r.cross.toFixed(0)} km/h`+
+           `\nA ${speed} km/h te quedan ${Math.floor(h)}:${String(Math.round(h%1*60)).padStart(2,'0')} h`;
+    if(roseOn) drawRose(r);
+  }
+  return txt;
+}
+
+function showPosition(pos, center){
+  const {latitude:lat, longitude:lon, accuracy:acc} = pos.coords;
+  locLayer.clearLayers();
+  L.circle([lat,lon], {radius:Math.max(acc,10), color:'#2b7fff', weight:1, opacity:.5,
+    fillColor:'#2b7fff', fillOpacity:.13, interactive:false}).addTo(locLayer);
+  const txt = describeOnRoute(lat, lon, acc);
+  L.circleMarker([lat,lon], {radius:8, color:'#fff', weight:3, fillColor:'#2b7fff', fillOpacity:1})
+    .addTo(locLayer).bindTooltip('Estás aquí (±'+Math.round(acc)+' m)');
+  if(center) map.setView([lat,lon], Math.max(map.getZoom(), 14), {animate:true});
+  return txt;
+}
+
+function geoError(e){
+  const msg = e.code===1 ? 'No has dado permiso de ubicación. Actívalo en el candado de la barra de direcciones.'
+            : e.code===2 ? 'No se ha podido obtener la posición (sin cobertura GPS).'
+            : e.code===3 ? 'El GPS ha tardado demasiado. Inténtalo al aire libre.'
+            : 'Error de geolocalización: '+e.message;
+  stopGeo();
+  setStatus(msg);
+}
+
+function stopGeo(){
+  if(geoWatch!=null){ navigator.geolocation.clearWatch(geoWatch); geoWatch=null; }
+  btnGeo.classList.remove('on');
+}
+
+btnGeo.addEventListener('click', ()=>{
+  if(!navigator.geolocation){ setStatus('Este navegador no permite geolocalización.'); return; }
+  if(geoWatch!=null){                                   // segundo toque: dejar de seguir
+    stopGeo(); locLayer.clearLayers();
+    toast('Seguimiento de tu posición desactivado.');
+    return;
+  }
+  if(!location.protocol.startsWith('https') && location.hostname!=='localhost'){
+    setStatus('La ubicación solo funciona con https (o en localhost). Abre la app desde un servidor seguro.');
+    return;
+  }
+  btnGeo.classList.add('on');
+  toast('Buscando tu posición…', 2500);
+  navigator.geolocation.getCurrentPosition(p=>{
+    geoPanned=false;
+    setStatus(showPosition(p, true));
+    // y a partir de aquí, seguimiento continuo mientras ruedas
+    geoWatch = navigator.geolocation.watchPosition(q=>showPosition(q, !geoPanned), geoError, GEO_OPT);
+  }, geoError, GEO_OPT);
+});
+
+// si mueves el mapa con el dedo, deja de recentrarse solo (pero sigue marcando tu punto)
+map.on('dragstart', ()=>{ if(geoWatch!=null) geoPanned=true; });
+function fitRoute(){
+  const b=L.latLngBounds(pts.map(p=>[p.lat,p.lon]));
+  map.fitBounds(b,{paddingTopLeft:[24,34], paddingBottomRight:[24, sheetVisible()+16]});
+}
+
+/* ---------- hoja inferior deslizable ---------- */
+const sheet=document.getElementById('sheet'), grab=document.getElementById('grab');
+let snaps=[0,0,0], snapIdx=0, sheetY=0, sheetH=0;
+
+function measureSheet(){
+  sheetH = sheet.offsetHeight;
+  const peek = Math.min(grab.offsetHeight + 4, Math.round(sheetH*0.6));
+  const half = Math.min(sheetH, Math.round(innerHeight*0.55));
+  snaps = [sheetH - peek, Math.max(0, sheetH - half), 0];   // 0=asomada 1=media 2=completa
+  sheetY = snaps[snapIdx];                 // recolocar en el mismo punto de anclaje
+  applySheet(false);
+}
+// alto de hoja realmente visible: en los modos con gráfica anclada, ninguno
+function sheetVisible(){ return viewMode===0 ? sheetH - sheetY : 0; }
+function applySheet(anim=true){
+  sheet.classList.toggle('anim', anim);
+  sheet.style.transform = `translateY(${sheetY}px)`;   // en otros modos manda la regla CSS
+  document.documentElement.style.setProperty('--vis', sheetVisible()+'px');
+}
+function setSnap(i, anim=true, save=true){
+  snapIdx = Math.max(0, Math.min(2, i));
+  sheetY = snaps[snapIdx];
+  applySheet(anim);
+  if(save) saveState();
+}
+
+let drag=null;
+grab.addEventListener('pointerdown', e=>{
+  drag={y:e.clientY, y0:sheetY, moved:0, id:e.pointerId};
+  grab.setPointerCapture(e.pointerId);
+  sheet.classList.remove('anim');
+});
+grab.addEventListener('pointermove', e=>{
+  if(!drag) return;
+  const dy=e.clientY-drag.y;
+  drag.moved=Math.max(drag.moved, Math.abs(dy));
+  sheetY = Math.max(0, Math.min(snaps[0], drag.y0+dy));
+  applySheet(false);
+});
+function endDrag(){
+  if(!drag) return;
+  if(drag.moved<8){                                  // ha sido un toque: cicla
+    setSnap(snapIdx===2 ? 0 : snapIdx+1);
+  }else{
+    let best=0, bd=1e9;
+    snaps.forEach((s,i)=>{ const d=Math.abs(s-sheetY); if(d<bd){bd=d;best=i;} });
+    setSnap(best);
+  }
+  drag=null;
+}
+grab.addEventListener('pointerup', endDrag);
+grab.addEventListener('pointercancel', endDrag);
+
+/* pestañas */
+document.getElementById('tabs').addEventListener('click', e=>{
+  const b=e.target.closest('button[data-p]'); if(!b) return;
+  const p=b.dataset.p;
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.pane').forEach(x=>x.classList.toggle('on',x.dataset.p===p));
+  if(snapIdx===0) setSnap(1, true, false);
+  saveState();
+});
+const activeTab = ()=> document.querySelector('#tabs button.on').dataset.p;
+function goTab(p){
+  const b=document.querySelector(`#tabs button[data-p="${p}"]`);
+  if(b && b.dataset.p!==activeTab()) b.click();
+}
+function redrawChartIfVisible(){
+  const cv=document.getElementById('chart'), hay=!!lastRows;
+  document.getElementById('dockEmpty').style.display = hay ? 'none' : '';
+  cv.style.display = hay ? '' : 'none';
+  document.querySelectorAll('.dockcap').forEach(c=>c.style.display = hay ? '' : 'none');
+  document.getElementById('chartKm').style.display = hay ? '' : 'none';
+  if(!hay || viewMode===0) return;
+  if(cv.clientHeight) drawChart(lastRows,lastSum);
+  if(viewMode===2) drawKmChart();
+}
+
+// gráfica por kilómetro, solo en modo «solo gráfica»
+function drawKmChart(){
+  const cv=document.getElementById('chartKm');
+  const W=cv.clientWidth, H=cv.clientHeight;
+  if(!W || !H) return;
+  const dpr=devicePixelRatio||1;
+  cv.width=W*dpr; cv.height=H*dpr;
+  const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  paintKmChart(g, W, H, perKm(lastRows, lastSum));
+}
+
+/* ============================================================
+   MODO DE VISTA
+   0 = solo mapa · 1 = mapa (2/3) y gráfica (1/3) · 2 = solo gráfica
+   ============================================================ */
+const MODES=[
+  {cls:'mode-mapa',    nom:'Solo mapa',
+   ic:'<path d="M3 6.6l6-2.4 6 2.4 6-2.4v12.8l-6 2.4-6-2.4-6 2.4z"/><path d="M9 4.2v15.2M15 6.6v15.2"/>'},
+  {cls:'mode-split',   nom:'Mapa y gráfica',
+   ic:'<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 15h18"/>'+
+      '<path d="M6 18.4l3-2 3 1.4 5-3.4" stroke-width="1.6"/>'},
+  {cls:'mode-grafica', nom:'Solo gráfica',
+   ic:'<rect x="3" y="4" width="18" height="16" rx="2.5"/>'+
+      '<path d="M6.5 15.5l3.5-3.5 3 2.2 4.5-5" stroke-width="1.8"/>'}
+];
+let viewMode=0;
+const btnView=document.getElementById('btnView');
+
+function applyMode(anim=true){
+  const m=MODES[viewMode];
+  MODES.forEach(x=>document.body.classList.toggle(x.cls, x===m));
+  document.getElementById('viewIcon').innerHTML=m.ic;
+  btnView.title = m.nom + ' — toca para cambiar';
+  btnView.classList.toggle('on', viewMode!==0);
+
+  // reparto de la pantalla por debajo de la cabecera
+  const hdr = document.getElementById('topbar').offsetHeight;
+  const libre = Math.max(0, innerHeight - hdr);
+  const dock = viewMode===0 ? 0 : viewMode===1 ? Math.round(libre/3) : libre;
+  document.documentElement.style.setProperty('--dock', dock+'px');
+
+  applySheet(anim);                       // la hoja se retira salvo en «solo mapa»
+  requestAnimationFrame(()=>{
+    map.invalidateSize();
+    redrawChartIfVisible();
+  });
+}
+
+btnView.addEventListener('click', ()=>{
+  viewMode=(viewMode+1)%3;
+  applyMode();
+  toast(MODES[viewMode].nom + (viewMode!==0 && !lastRows ? ': analiza una ruta para ver la gráfica.' : ''), 2200);
+  if(viewMode!==0 && lastRows && !chartHintShown){
+    chartHintShown=true;
+    setTimeout(()=>toast('Arrastra el dedo por la gráfica para recorrer la ruta.', 3600), 2400);
+  }
+  saveState();
+});
+let chartHintShown=false;
+
+/* ---------- aviso flotante ---------- */
+let toastTimer;
+function toast(t, ms=3800){
+  const el=document.getElementById('toast');
+  el.textContent=t; el.classList.add('show'); document.body.classList.add('toasting');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>{ el.classList.remove('show'); document.body.classList.remove('toasting'); }, ms);
+}
+function setStatus(t){ document.getElementById('status').textContent=t; toast(t); }
+
+/* ---------- carga GPX ---------- */
+document.getElementById('date').valueAsDate = new Date();
+
+let gpxName='';                                   // nombre del GPX activo
+
+/* ============================================================
+   CAPAS GPX
+   Se pueden tener varias rutas cargadas a la vez: una es la «activa» (la que
+   se analiza y colorea con el viento) y las demás se dibujan de referencia.
+   ============================================================ */
+const refLayer = L.layerGroup().addTo(map);
+const TRK_COLS = ['#0ea5e9','#22c55e','#f59e0b','#8b5cf6','#ef4444','#14b8a6','#ec4899'];
+let tracks=[], activeId=null, trkSeq=0;
+
+const activeTrack = ()=> tracks.find(t=>t.id===activeId) || null;
+
+function addTrack(name, arr, activar){
+  // si ya había una capa con ese nombre, se sustituye en vez de duplicarla
+  const previo = tracks.find(t=>t.name===name);
+  if(previo){
+    previo.pts=arr; previo.on=true;
+    setActiveTrack(previo.id, true);
+    setStatus(`Capa «${name}» actualizada con el archivo recién cargado.`);
+    return previo;
+  }
+  const t={ id:++trkSeq, name, pts:arr, on:true,
+            color:TRK_COLS[tracks.length % TRK_COLS.length] };
+  tracks.push(t);
+  if(activar || activeId==null) setActiveTrack(t.id, true);
+  else { drawRefs(); renderTrackList(); }
+  return t;
+}
+
+function setActiveTrack(id, fit){
+  const t=tracks.find(x=>x.id===id); if(!t) return;
+  activeId=t.id; gpxName=t.name; t.on=true;
+  document.getElementById('fileTxt').textContent='Añadir ruta GPX';
+  setPoints(t.pts, fit);                       // deja la ruta lista para analizar
+  t.pts=pts;                                   // setPoints añade las distancias acumuladas
+  drawRefs();
+  renderTrackList();
+}
+
+function removeTrack(id){
+  const i=tracks.findIndex(t=>t.id===id); if(i<0) return;
+  const era = tracks[i].id===activeId, nom=tracks[i].name;
+  tracks.splice(i,1);
+  if(era){
+    activeId=null;
+    if(tracks.length) setActiveTrack(tracks[Math.max(0,i-1)].id, true);
+    else clearActive();
+  }else{ drawRefs(); renderTrackList(); }
+  setStatus(`Capa «${nom}» quitada.`);
+  saveState();
+}
+
+// no queda ninguna ruta: mapa y paneles a cero
+function clearActive(){
+  pts=[]; lastRows=null; lastSum=null; analysis=null; gpxName='';
+  [trackLayer, markerLayer, windLayer, dirLayer, signLayer].forEach(l=>l.clearLayers());
+  document.getElementById('windkey').style.display='none';
+  document.getElementById('rose').style.display='none';
+  ['sumCard','verdictCard','segCard'].forEach(id=>document.getElementById(id).style.display='none');
+  document.getElementById('sumEmpty').style.display='';
+  document.getElementById('go').disabled=true;
+  document.getElementById('pdf').disabled=true;
+  drawRefs(); renderTrackList(); updatePeek(); redrawChartIfVisible();
+}
+
+// rutas de referencia: todas las visibles menos la activa
+function drawRefs(){
+  refLayer.clearLayers();
+  tracks.forEach(t=>{
+    if(t.id===activeId || !t.on) return;
+    L.polyline(t.pts.map(p=>[p.lat,p.lon]),
+      {color:'#fff', weight:7, opacity:.75, interactive:false}).addTo(refLayer);
+    L.polyline(t.pts.map(p=>[p.lat,p.lon]),
+      {color:t.color, weight:3.5, opacity:.95, dashArray:'7 5'})
+      .addTo(refLayer)
+      .bindTooltip(`${t.name} · ${(largoDe(t)/1000).toFixed(1)} km<br>Toca su capa para analizarla`,
+                   {sticky:true});
+  });
+  refLayer.eachLayer(l=>l.bringToBack && l.bringToBack());
+}
+
+function largoDe(t){
+  if(t.pts.length && t.pts.at(-1).d!=null) return t.pts.at(-1).d;
+  let d=0; for(let i=1;i<t.pts.length;i++) d+=haversine(t.pts[i-1],t.pts[i]);
+  return d;
+}
+
+function renderTrackList(){
+  const box=document.getElementById('trackList');
+  box.innerHTML = tracks.map(t=>{
+    const act=t.id===activeId;
+    return `<div class="trk${act?' sel':''}${!act&&!t.on?' off':''}" data-id="${t.id}">
+      <span class="dot" style="background:${act?'var(--acc)':t.color}"></span>
+      <span class="nm">${t.name}<em>${(largoDe(t)/1000).toFixed(1)} km${act?' · se analiza esta':''}</em></span>
+      ${act ? '<span class="badge">ACTIVA</span>'
+            : `<button class="tbtn" data-a="eye" title="Mostrar u ocultar">${t.on?'👁':'🚫'}</button>`}
+      <button class="tbtn" data-a="del" title="Quitar capa">🗑</button>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('trackList').addEventListener('click', e=>{
+  const fila=e.target.closest('.trk'); if(!fila) return;
+  const id=+fila.dataset.id, b=e.target.closest('button[data-a]');
+  if(b && b.dataset.a==='del'){
+    const t=tracks.find(x=>x.id===id);
+    if(t && confirm(`¿Quitar la capa «${t.name}»?`)) removeTrack(id);
+    return;
+  }
+  if(b && b.dataset.a==='eye'){
+    const t=tracks.find(x=>x.id===id); if(!t) return;
+    t.on=!t.on; drawRefs(); renderTrackList(); saveState();
+    return;
+  }
+  if(id!==activeId){ setActiveTrack(id, true); saveState(); }
+});
+
+document.getElementById('gpx').addEventListener('change', e=>{
+  const files=[...e.target.files]; if(!files.length) return;
+  let pendientes=files.length, ultima=null;
+  files.forEach(f=>{
+    const r=new FileReader();
+    r.onload = ()=>{
+      try{
+        const arr=parseGPX(r.result);
+        // la última que se carga pasa a ser la activa
+        ultima = addTrack(f.name, arr, true).id;
+      }catch(err){ setStatus(`Error leyendo «${f.name}»: `+err.message); }
+      if(--pendientes===0){ saveState(); if(tracks.length>1) fitAll(); }
+    };
+    r.onerror = ()=>{ setStatus(`No se pudo leer «${f.name}».`); if(--pendientes===0) saveState(); };
+    r.readAsText(f);
+  });
+  e.target.value='';                              // permite recargar el mismo archivo
+});
+
+// encuadre que abarca todas las capas visibles
+function fitAll(){
+  const ll=[];
+  tracks.forEach(t=>{ if(t.on || t.id===activeId) t.pts.forEach(p=>ll.push([p.lat,p.lon])); });
+  if(!ll.length) return;
+  map.fitBounds(L.latLngBounds(ll), {paddingTopLeft:[24,34], paddingBottomRight:[24, sheetVisible()+16]});
+}
+
+function parseGPX(text){
+  const doc = new DOMParser().parseFromString(text,'application/xml');
+  if(doc.querySelector('parsererror')) throw new Error('XML no válido');
+  let nodes = [...doc.getElementsByTagName('trkpt')];
+  if(!nodes.length) nodes = [...doc.getElementsByTagName('rtept')];
+  if(!nodes.length) throw new Error('no hay trkpt ni rtept');
+
+  const arr = nodes.map(n=>({
+    lat:+n.getAttribute('lat'),
+    lon:+n.getAttribute('lon'),
+    ele: n.getElementsByTagName('ele')[0] ? +n.getElementsByTagName('ele')[0].textContent : null
+  })).filter(p=>isFinite(p.lat)&&isFinite(p.lon));
+  if(!arr.length) throw new Error('ninguna coordenada válida');
+  return arr;
+}
+
+function setPoints(arr, fit){
+  pts = arr;
+  pts[0].d=0;
+  for(let i=1;i<pts.length;i++) pts[i].d = pts[i-1].d + haversine(pts[i-1],pts[i]);
+
+  // fuera lo de la ruta anterior: el análisis viejo ya no vale para esta capa
+  [trackLayer, markerLayer, windLayer, dirLayer, signLayer].forEach(l=>l.clearLayers());
+  document.getElementById('windkey').style.display='none';
+  document.getElementById('rose').style.display='none';
+  ['sumCard','verdictCard','segCard'].forEach(id=>document.getElementById(id).style.display='none');
+  document.getElementById('sumEmpty').style.display='';
+  lastRows=null; lastSum=null; analysis=null;
+  document.getElementById('pdf').disabled=true;
+  L.polyline(pts.map(p=>[p.lat,p.lon]),{color:'#8b95a5',weight:4}).addTo(trackLayer);
+  if(fit) fitRoute();
+
+  setStatus(`${gpxName ? '«'+gpxName+'» · ' : ''}${pts.length} puntos · `+
+            `${(pts.at(-1).d/1000).toFixed(1)} km. Listo para analizar.`);
+  document.getElementById('go').disabled=false;
+  updatePeek();
+  redrawChartIfVisible();
+}
+
+/* ---------- análisis ---------- */
+document.getElementById('go').addEventListener('click', run);
+
+async function run(){
+  const btn=document.getElementById('go'); btn.disabled=true;
+  const txt=btn.textContent; btn.textContent='Analizando…';
+  try{ await analyze(); }
+  catch(e){ setStatus('Error: '+e.message); console.error(e); }
+  btn.textContent=txt; btn.disabled=false;
+}
+
+async function analyze(){
+  const speed = +document.getElementById('speed').value;
+  const start = new Date(document.getElementById('date').value+'T'+document.getElementById('time').value);
+  if(isNaN(start)) throw new Error('fecha u hora no válidas');
+  const model = document.getElementById('src').value;
+  const total = pts.at(-1).d;
+
+  pts.forEach(p => p.t = new Date(start.getTime() + (p.d/1000)/speed*3600*1000));
+
+  const N = anchorCount(total);
+  const anchors = [];
+  for(let i=0;i<N;i++){
+    const target = total*i/(N-1||1);
+    let k=0; while(k<pts.length-1 && pts[k].d<target) k++;
+    anchors.push(k);
+  }
+
+  setStatus(`Consultando viento real en ${N} puntos de la ruta…`);
+  const weather = await fetchWeather(anchors.map(k=>pts[k]), start, model);
+
+  let idx=0;
+  const rows = buildRows(start, speed, (i,p) => {
+    while(idx<anchors.length-1 && Math.abs(pts[anchors[idx+1]].d - p.d) < Math.abs(pts[anchors[idx]].d - p.d)) idx++;
+    return sampleAt(weather[idx], p.t);
+  });
+  if(!rows.length) throw new Error('no se pudo cruzar la ruta con los datos meteorológicos');
+
+  analysis = summarize(rows, speed, total, start);
+  render(rows, analysis);
+  setStatus('Análisis completado con datos de Open-Meteo.');
+  goTab('resumen');
+  if(snapIdx===0) setSnap(1, true, false);
+  saveState();
+}
+
+function buildRows(start, speed, wAt){
+  pts.forEach(p => p.t = new Date(start.getTime() + (p.d/1000)/speed*3600*1000));
+  const rows=[];
+  for(let i=0;i<pts.length-1;i++){
+    const p=pts[i], q=pts[i+1];
+    const seg = haversine(p,q); if(seg<1) continue;
+    const w = wAt(i,p);
+    if(!w) continue;
+
+    const hdg = bearing(p,q);
+    const rel = ((w.dir - hdg) + 540) % 360 - 180;
+    const head  = w.speed * Math.cos(rad(rel));
+    const cross = Math.abs(w.speed * Math.sin(rad(rel)));
+
+    rows.push({ i, lat:p.lat, lon:p.lon, d:p.d, t:p.t, len:seg, hdg,
+      windDir:w.dir, windSpeed:w.speed, gust:w.gust, temp:w.temp, rain:w.rain,
+      rel, head, cross, ele:p.ele,
+      dEle:(p.ele!=null&&q.ele!=null) ? q.ele-p.ele : 0 });
+  }
+  return rows;
+}
+
+async function fetchWeather(list, start, model){
+  const d0 = new Date(start); d0.setHours(0,0,0,0);
+  const d1 = new Date(d0); d1.setDate(d1.getDate()+1);
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const u = new URL('https://api.open-meteo.com/v1/forecast');
+  u.search = new URLSearchParams({
+    latitude:  list.map(p=>p.lat.toFixed(4)).join(','),
+    longitude: list.map(p=>p.lon.toFixed(4)).join(','),
+    hourly:'wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m,precipitation_probability',
+    wind_speed_unit:'kmh', timezone:'auto',
+    start_date:iso(d0), end_date:iso(d1), models:model
+  });
+  const r = await fetch(u);
+  if(r.status===429) throw new Error('Open-Meteo ha limitado las peticiones. Espera un minuto y reintenta.');
+  if(!r.ok) throw new Error('Open-Meteo respondió '+r.status);
+  const j = await r.json();
+  return (Array.isArray(j) ? j : [j]).map(o=>({
+    times: o.hourly.time.map(t=>new Date(t).getTime()),
+    speed: o.hourly.wind_speed_10m,
+    dir:   o.hourly.wind_direction_10m,
+    gust:  o.hourly.wind_gusts_10m,
+    temp:  o.hourly.temperature_2m,
+    rain:  o.hourly.precipitation_probability
+  }));
+}
+
+function sampleAt(w, t){
+  if(!w) return null;
+  const ms = t.getTime(), T = w.times;
+  if(ms<=T[0])  return pick(w,0,0,0);
+  if(ms>=T.at(-1)) return pick(w,T.length-1,T.length-1,0);
+  let k=0; while(k<T.length-1 && T[k+1]<ms) k++;
+  return pick(w,k,k+1,(ms-T[k])/(T[k+1]-T[k]));
+}
+function pick(w,a,b,f){
+  const lin=(x,y)=> x + (y-x)*f;
+  let da = w.dir[a], db = w.dir[b], diff = ((db-da+540)%360)-180;
+  return {
+    speed: lin(w.speed[a], w.speed[b]),
+    dir:   (da + diff*f + 360)%360,
+    gust:  lin(w.gust[a],  w.gust[b]),
+    temp:  lin(w.temp[a],  w.temp[b]),
+    rain:  lin(w.rain[a]??0, w.rain[b]??0)
+  };
+}
+
+/* ---------- resumen ---------- */
+const anchorCount = total => Math.min(24, Math.max(3, Math.round(total/5000)));
+
+function summarize(rows, speed, total, start){
+  const sum = f => rows.reduce((s,r)=>s+f(r)*r.len,0)/total;
+  let tail=0, head=0, cross=0;
+  rows.forEach(r=>{
+    const a=Math.abs(r.rel);
+    if(a<60) head+=r.len; else if(a>120) tail+=r.len; else cross+=r.len;
+  });
+
+  const rho=1.225, CdA=0.32, m=80, gAcc=9.81, Crr=0.005, K=0.5*rho*CdA, v=speed/3.6;
+  let eBase=0, eReal=0;
+  rows.forEach(r=>{
+    const roll = Crr*m*gAcc*r.len;
+    const grav = m*gAcc*r.dEle;
+    const va   = Math.max(0, v + r.head/3.6);
+    eBase += K*v*v*r.len   + roll + grav;
+    eReal += K*va*va*r.len + roll + grav;
+  });
+  const wImpact = eBase>0 ? ((eReal-eBase)/eBase)*100 : 0;
+
+  return {
+    total, start, speed,
+    nAnchors: anchorCount(total),
+    dur: total/1000/speed*3600,
+    windAvg: sum(r=>r.windSpeed),
+    gustMax: Math.max(...rows.map(r=>r.gust)),
+    tempAvg: sum(r=>r.temp),
+    rainMax: Math.max(...rows.map(r=>r.rain||0)),
+    maxHead: Math.max(...rows.map(r=>r.head)),
+    maxCross: Math.max(...rows.map(r=>r.cross)),
+    pTail: tail/total*100, pHead: head/total*100, pCross: cross/total*100,
+    wImpact,
+    gain: rows.reduce((s,r)=> s + (r.dEle>0? r.dEle:0), 0),
+    segments: keySegments(rows)
+  };
+}
+
+function keySegments(rows){
+  const cls = r => Math.abs(r.rel)<60 ? 'head' : Math.abs(r.rel)>120 ? 'tail' : 'cross';
+  const out=[]; let cur=null;
+  rows.forEach(r=>{
+    const c=cls(r);
+    if(!cur||cur.c!==c){ cur={c, from:r.d, to:r.d, i:r.i, w:0, len:0, rel:r.rel}; out.push(cur); }
+    cur.to=r.d+r.len; cur.len+=r.len; cur.w += Math.abs(c==='cross'?r.cross:r.head)*r.len;
+  });
+  return out.filter(s=>s.len>1500)
+            .map(s=>({...s, avg:s.w/s.len}))
+            .sort((a,b)=> (b.len*(b.c==='head'?1.6:b.c==='cross'?1.1:0.6)) - (a.len*(a.c==='head'?1.6:a.c==='cross'?1.1:0.6)))
+            .slice(0,10);
+}
+
+/* ---------- render ---------- */
+let filter='all';
+const matches = (r, f=filter) => f==='all' || (f==='head' ? r.head>0 : r.head<=0);
+
+function drawTrack(rows){
+  trackLayer.clearLayers();
+  L.polyline(pts.map(p=>[p.lat,p.lon]),{color:'#fff',weight:12,opacity:.95}).addTo(trackLayer);
+  rows.forEach(r=>{
+    const q=pts[r.i+1], on=matches(r);
+    L.polyline([[r.lat,r.lon],[q.lat,q.lon]],
+      on ? {color:windColor(r.rel),weight:6,opacity:1}
+         : {color:'#c9ced6',weight:3,opacity:.75})
+      .addTo(trackLayer).bindTooltip(
+      `km ${(r.d/1000).toFixed(1)} · ${r.t.toTimeString().slice(0,5)}<br>`+
+      `Viento ${r.windSpeed.toFixed(0)} km/h del ${cardinal(r.windDir)}<br>`+
+      `${r.head>0?'En contra':'De cola'} ${Math.abs(r.head).toFixed(0)} · Lateral ${r.cross.toFixed(0)} km/h`,
+      {sticky:true});
+  });
+}
+
+// menos flechas que en escritorio: en una pantalla de móvil se solapan enseguida
+function drawArrows(rows, s){
+  windLayer.clearLayers(); dirLayer.clearLayers();
+  const nA = Math.min(18, Math.max(5, Math.round(s.total/4000)));
+  for(let k=0;k<nA;k++){
+    const target = s.total*(k+0.5)/nA;
+    const r = rows.reduce((a,b)=> Math.abs(b.d-target)<Math.abs(a.d-target)?b:a);
+    if(!matches(r)) continue;
+    const px = Math.round(Math.min(44, Math.max(26, 24 + r.windSpeed*0.5)));
+    L.marker([r.lat,r.lon],{icon:arrowIcon((r.windDir+180)%360, windColor(r.rel), px),
+      interactive:true, keyboard:false})
+      .addTo(windLayer)
+      .bindTooltip(`Viento ${r.windSpeed.toFixed(0)} km/h del ${cardinal(r.windDir)}<br>`+
+        `${r.head>0?'En contra':'De cola'} ${Math.abs(r.head).toFixed(0)} · Lateral ${r.cross.toFixed(0)} km/h`,
+        {sticky:true})
+      .on('click',()=>drawRose(r));
+    L.marker([r.lat,r.lon],{icon:chevronIcon(r.hdg), interactive:false, keyboard:false}).addTo(dirLayer);
+  }
+}
+
+const KM_SIGNS=[50,25,10,5];
+function drawSigns(rows, s){
+  signLayer.clearLayers();
+  KM_SIGNS.forEach(km=>{
+    const target = s.total - km*1000;
+    if(target <= 0) return;
+    const r = rows.reduce((a,b)=> Math.abs(b.d-target)<Math.abs(a.d-target)?b:a);
+    L.marker([r.lat,r.lon],{icon:signIcon(km,r.hdg), zIndexOffset:1000, keyboard:false})
+      .addTo(signLayer)
+      .bindTooltip(`Faltan ${km} km para el final<br>`+
+        `km ${(r.d/1000).toFixed(1)} de ${(s.total/1000).toFixed(1)} · paso previsto ${r.t.toTimeString().slice(0,5)}<br>`+
+        `Viento ${r.windSpeed.toFixed(0)} km/h del ${cardinal(r.windDir)} · `+
+        `${r.head>0?'en contra':'de cola'} ${Math.abs(r.head).toFixed(0)}`,
+        {direction:'top', offset:[0,-30]});
+  });
+}
+
+function render(rows, s){
+  markerLayer.clearLayers();
+  drawTrack(rows);
+  drawArrows(rows, s);
+  drawSigns(rows, s);
+
+  L.circleMarker([pts[0].lat,pts[0].lon],{radius:8,color:'#fff',weight:2.5,fillColor:'#22c55e',fillOpacity:1})
+    .addTo(markerLayer).bindTooltip('Salida');
+  L.circleMarker([pts.at(-1).lat,pts.at(-1).lon],{radius:8,color:'#fff',weight:2.5,fillColor:'#111',fillOpacity:1})
+    .addTo(markerLayer).bindTooltip('Meta');
+
+  const kt = s.pTail + s.pCross/2, kh = s.pHead + s.pCross/2;
+  document.getElementById('windkey').style.display='flex';
+  set('k_tail', kt.toFixed(1).replace('.',',')+'%');
+  set('k_head', kh.toFixed(1).replace('.',',')+'%');
+
+  document.getElementById('sumCard').style.display='';
+  document.getElementById('verdictCard').style.display='';
+  document.getElementById('segCard').style.display='';
+  document.getElementById('sumEmpty').style.display='none';
+  document.getElementById('segEmpty').textContent='Toca un tramo para centrarlo en el mapa.';
+
+  const fmtDur = sec => `${Math.floor(sec/3600)}:${String(Math.round(sec%3600/60)).padStart(2,'0')}`;
+  set('s_dist', (s.total/1000).toFixed(2)+' km');
+  set('s_gain', Math.round(s.gain)+' m');
+  set('s_dur',  fmtDur(s.dur));
+  set('s_wind', s.windAvg.toFixed(0)+' km/h');
+  set('s_gust', s.gustMax.toFixed(0)+' km/h');
+  set('s_temp', s.tempAvg.toFixed(1)+' °C');
+  set('s_rain', Math.round(s.rainMax)+' %');
+  set('s_maxhead', s.maxHead.toFixed(0)+' km/h');
+  set('s_maxcross', s.maxCross.toFixed(0)+' km/h');
+  set('s_watts', (s.wImpact>0?'+':'')+s.wImpact.toFixed(1)+' %');
+  set('s_pts', `${s.nAnchors} · 1/${(s.total/1000/s.nAnchors).toFixed(1)} km`);
+  set('p_tail', s.pTail.toFixed(0)+'%');
+  set('p_cross', s.pCross.toFixed(0)+'%');
+  set('p_head', s.pHead.toFixed(0)+'%');
+
+  renderVerdict(s);
+  renderSegments(s.segments);
+  lastRows = rows; lastSum = s;
+  updatePeek();
+  requestAnimationFrame(redrawChartIfVisible);
+  document.getElementById('pdf').disabled = false;
+  if(roseOn) drawRose(rows.reduce((a,b)=> b.head>a.head?b:a));
+}
+const set=(id,v)=>document.getElementById(id).textContent=v;
+
+// fila de cifras que se ve con la hoja cerrada
+function updatePeek(){
+  const p=document.getElementById('peek');
+  if(!lastSum){
+    p.className='empty';
+    p.textContent = pts.length
+      ? `${(pts.at(-1).d/1000).toFixed(1)} km cargados · pulsa «Analizar viento»`
+      : 'Carga un GPX para empezar · desliza esta hoja hacia arriba';
+    return;
+  }
+  const s=lastSum;
+  p.className='';
+  requestAnimationFrame(measureSheet);       // la fila de cifras cambia el alto asomado
+  p.innerHTML =
+    `<div class="q"><i>Distancia</i><b>${(s.total/1000).toFixed(0)}<span style="font-size:10px"> km</span></b></div>`+
+    `<div class="q"><i>Viento</i><b>${s.windAvg.toFixed(0)}<span style="font-size:10px"> km/h</span></b></div>`+
+    `<div class="q"><i>En contra</i><b style="color:${windColor(0)}">${s.pHead.toFixed(0)}%</b></div>`+
+    `<div class="q"><i>wImpact</i><b style="color:${s.wImpact>4?'#ff1493':s.wImpact<-3?'#0891b2':'#6b7280'}">`+
+      `${s.wImpact>0?'+':''}${s.wImpact.toFixed(0)}%</b></div>`;
+}
+
+function verdictOf(s){
+  let tag, color, txt;
+  if(s.wImpact < -3){ tag='DÍA REGALADO'; color='#0891b2';
+    txt=`El viento juega a tu favor durante el ${s.pTail.toFixed(0)}% de la ruta. Aprovecha para apretar en los tramos de cola y guarda algo para el resto.`; }
+  else if(s.wImpact < 4){ tag='CONDICIONES NEUTRAS'; color='#6b7280';
+    txt=`Viento poco determinante: el balance sale prácticamente en tablas. Ritmo constante y sin sobresaltos.`; }
+  else if(s.wImpact < 18){ tag='EXIGENTE'; color='#a020f0';
+    txt=`Vas a pagar un ${s.wImpact.toFixed(0)}% más de potencia por el viento. Dosifica en el ${s.pHead.toFixed(0)}% de kilómetros de cara y no te vacíes pronto.`; }
+  else { tag='DÍA DURO'; color='#ff1493';
+    txt=`Ruta claramente pasada por viento: +${s.wImpact.toFixed(0)}% de potencia frente a un día en calma. Sal conservador y busca rueda en los tramos de cara.`; }
+
+  if(s.maxCross>25) txt += ` Ojo a los laterales: hasta ${s.maxCross.toFixed(0)} km/h de viento cruzado, cuidado con ruedas de perfil alto y con las zonas expuestas.`;
+  if(s.gustMax>50)  txt += ` Rachas de hasta ${s.gustMax.toFixed(0)} km/h; manos en la parte baja del manillar en descensos.`;
+  if(s.rainMax>=50) txt += ` Además hay hasta un ${Math.round(s.rainMax)}% de probabilidad de lluvia: lleva chubasquero.`;
+
+  return {tag, color, txt};
+}
+
+function renderVerdict(s){
+  const v = verdictOf(s);
+  document.getElementById('tagline').innerHTML =
+    `<span class="tag" style="background:${v.color}1f;color:${v.color};border:1px solid ${v.color}55">${v.tag}</span>`;
+  document.getElementById('verdict').textContent = v.txt;
+}
+
+function renderSegments(segs){
+  const nombre={head:'En contra',cross:'Lateral',tail:'De cola'};
+  document.getElementById('seglist').innerHTML = segs.map(s=>
+    `<div data-i="${s.i}">
+       <b style="color:${windColor(s.rel)}">${nombre[s.c]}</b> ·
+       km ${(s.from/1000).toFixed(1)}–${(s.to/1000).toFixed(1)}
+       (${(s.len/1000).toFixed(1)} km) · ${s.avg.toFixed(0)} km/h
+     </div>`).join('') || '<div>Sin tramos destacables.</div>';
+  document.querySelectorAll('#seglist div[data-i]').forEach(el=>{
+    el.onclick=()=>{ const p=pts[+el.dataset.i]; map.setView([p.lat,p.lon],13); setSnap(0); };
+  });
+}
+
+/* ---------- gráfico ---------- */
+function paintChart(g, W, H, rows, s, f, scale=1){
+  g.clearRect(0,0,W,H);
+  const pad={l:28*scale, r:8*scale, t:17*scale, b:15*scale};
+  const maxA = Math.max(12, ...rows.map(r=>Math.abs(r.head)), ...rows.map(r=>r.cross));
+  const x = d => pad.l + (d/s.total)*(W-pad.l-pad.r);
+  const y = v => pad.t + (1 - (v+maxA)/(2*maxA))*(H-pad.t-pad.b);
+  const on = r => matches(r,f);
+
+  g.font=(9.5*scale)+'px system-ui'; g.textBaseline='middle';
+
+  rows.forEach(r=>{
+    const x0=x(r.d), x1=Math.max(x0+0.6, x(r.d+r.len));
+    g.fillStyle = on(r) ? windColor(r.rel) : '#eef0f3';
+    g.fillRect(x0, Math.min(y(0),y(r.head)), x1-x0, Math.abs(y(r.head)-y(0)));
+  });
+
+  g.strokeStyle='rgba(254,96,0,.6)'; g.lineWidth=1*scale; g.beginPath();
+  let pen=false;
+  rows.forEach(r=>{
+    if(!on(r)){ pen=false; return; }
+    const px=x(r.d), py=y(r.cross);
+    pen ? g.lineTo(px,py) : g.moveTo(px,py); pen=true;
+  });
+  g.stroke();
+
+  g.strokeStyle='rgba(43,47,54,.2)'; g.lineWidth=1*scale;
+  g.beginPath(); g.moveTo(pad.l, y(0)+.5); g.lineTo(W-pad.r, y(0)+.5); g.stroke();
+
+  g.fillStyle='#aeb4bd'; g.textAlign='right';
+  g.fillText('+'+Math.round(maxA), pad.l-5*scale, y(maxA));
+  g.fillText('−'+Math.round(maxA), pad.l-5*scale, y(-maxA));
+
+  g.textAlign='left';
+  g.fillText('en contra', pad.l+1, pad.t/2);
+  g.fillStyle='rgba(254,96,0,.75)';
+  g.textAlign='right'; g.fillText('lateral', W-pad.r, pad.t/2);
+  g.fillStyle='#aeb4bd'; g.textAlign='left';
+  g.fillText('de cola', pad.l+1, H-pad.b/2);
+
+  g.textAlign='center';
+  const step=Math.max(5, Math.round(s.total/1000/6/5)*5);
+  for(let k=step;k<s.total/1000;k+=step){
+    const px=x(k*1000);
+    if(px>pad.l+58*scale) g.fillText(k, px, H-pad.b/2);
+  }
+  g.textAlign='right'; g.fillText('km', W-pad.r, H-pad.b/2);
+  return {pad, x};
+}
+
+/* En el móvil el gráfico se recorre con el dedo: pointerdown + pointermove.
+   El punto elegido se queda marcado hasta el siguiente toque.            */
+function drawChart(rows, s){
+  const cv=document.getElementById('chart'), tip=document.getElementById('tip'),
+        guide=document.getElementById('chartGuide');
+  const W=cv.clientWidth, H=cv.clientHeight;
+  if(!W || !H) return;
+  const dpr=devicePixelRatio||1;
+  cv.width=W*dpr; cv.height=H*dpr;
+  const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  const {pad, x} = paintChart(g, W, H, rows, s, filter);
+  tip.style.display='none'; guide.style.display='none';
+
+  const scrub = clientX =>{
+    const rect=cv.getBoundingClientRect();
+    const mx=Math.max(pad.l, Math.min(W-pad.r, clientX-rect.left));
+    const d=(mx-pad.l)/(W-pad.l-pad.r)*s.total;
+    const r=rows.reduce((a,b)=> Math.abs(b.d-d)<Math.abs(a.d-d)?b:a);
+
+    guide.style.display='block';
+    guide.style.left=(cv.offsetLeft+x(r.d))+'px';
+    guide.style.top=(cv.offsetTop+pad.t)+'px';
+    guide.style.height=(H-pad.t-pad.b)+'px';
+
+    tip.style.display='block';
+    const tw=tip.offsetWidth||150;
+    tip.style.left=(cv.offsetLeft+Math.max(0, Math.min(W-tw, mx-tw/2)))+'px';
+    tip.style.top=(cv.offsetTop+2)+'px';
+    tip.textContent =
+      `km ${(r.d/1000).toFixed(1)}  ·  ${r.t.toTimeString().slice(0,5)}\n`+
+      `Viento ${r.windSpeed.toFixed(0)} km/h del ${cardinal(r.windDir)}\n`+
+      `${r.head>0?'En contra':'De cola'} ${Math.abs(r.head).toFixed(0)} km/h\n`+
+      `Lateral ${r.cross.toFixed(0)} km/h  ·  ${r.temp.toFixed(0)} °C`;
+
+    markerLayer.eachLayer(l=>{ if(l._hover) markerLayer.removeLayer(l); });
+    const m=L.circleMarker([r.lat,r.lon],{radius:7,color:'#fff',weight:2.5,fillColor:'#fe6000',fillOpacity:1});
+    m._hover=true; m.addTo(markerLayer);
+    const a=L.marker([r.lat,r.lon],{icon:arrowIcon((r.windDir+180)%360, windColor(r.rel), 44),
+      interactive:false, keyboard:false});
+    a._hover=true; a.addTo(markerLayer);
+    // si el punto se sale de la parte visible del mapa, lo traemos al centro
+    const ll=L.latLng(r.lat,r.lon);
+    if(!map.getBounds().pad(-0.12).contains(ll)) map.panTo(ll,{animate:false});
+    drawRose(r);
+  };
+
+  let scrubbing=false;
+  cv.onpointerdown = e=>{ scrubbing=true; cv.setPointerCapture(e.pointerId); scrub(e.clientX); };
+  cv.onpointermove = e=>{ if(scrubbing || e.pointerType==='mouse' && e.buttons===0) scrub(e.clientX); };
+  cv.onpointerup = cv.onpointercancel = ()=>{ scrubbing=false; };
+  cv.onpointerleave = e=>{ if(e.pointerType==='mouse'){ tip.style.display='none'; guide.style.display='none'; } };
+}
+
+/* ---------- agregado por kilómetro (informe) ---------- */
+function perKm(rows, s){
+  const out=[], n=Math.ceil(s.total/1000);
+  for(let k=0;k<n;k++){
+    const a=k*1000, b=Math.min((k+1)*1000, s.total);
+    const sel=rows.filter(r=> r.d+r.len>a && r.d<b);
+    if(!sel.length) continue;
+    const len=sel.reduce((t,r)=>t+r.len,0);
+    const avg=f=>sel.reduce((t,r)=>t+f(r)*r.len,0)/len;
+    const circ=f=>{
+      const sn=sel.reduce((t,r)=>t+Math.sin(rad(f(r)))*r.len,0);
+      const cs=sel.reduce((t,r)=>t+Math.cos(rad(f(r)))*r.len,0);
+      return (deg(Math.atan2(sn,cs))+360)%360;
+    };
+    const rel=((circ(r=>r.rel)+540)%360)-180;
+    out.push({ km:k+1, from:a, to:b, t:sel[0].t, lat:sel[0].lat, lon:sel[0].lon,
+      head:avg(r=>r.head), cross:avg(r=>r.cross), speed:avg(r=>r.windSpeed),
+      gust:Math.max(...sel.map(r=>r.gust)), dir:circ(r=>r.windDir), rel,
+      dEle:sel.reduce((t,r)=>t+r.dEle,0) });
+  }
+  return out;
+}
+
+function paintKmChart(g, W, H, km, scale=1){
+  g.clearRect(0,0,W,H);
+  const pad={l:30*scale, r:10*scale, t:18*scale, b:24*scale};
+  const maxA=Math.max(10, ...km.map(k=>Math.abs(k.head)));
+  const bw=(W-pad.l-pad.r)/km.length;
+  const y=v=>pad.t+(1-(v+maxA)/(2*maxA))*(H-pad.t-pad.b);
+
+  g.font=(9.5*scale)+'px system-ui'; g.textBaseline='middle';
+  km.forEach((k,i)=>{
+    const x0=pad.l+i*bw;
+    g.fillStyle=windColor(k.rel);
+    g.fillRect(x0+bw*0.12, Math.min(y(0),y(k.head)), Math.max(1,bw*0.76), Math.abs(y(k.head)-y(0)));
+  });
+
+  g.strokeStyle='rgba(43,47,54,.2)'; g.lineWidth=1*scale;
+  g.beginPath(); g.moveTo(pad.l,y(0)+.5); g.lineTo(W-pad.r,y(0)+.5); g.stroke();
+
+  g.fillStyle='#aeb4bd'; g.textAlign='right';
+  g.fillText('+'+Math.round(maxA), pad.l-5*scale, y(maxA));
+  g.fillText('−'+Math.round(maxA), pad.l-5*scale, y(-maxA));
+  g.textAlign='left';  g.fillText('en contra km/h', pad.l+1, pad.t/2);
+  g.textAlign='right'; g.fillText('de cola km/h', W-pad.r, pad.t/2);
+
+  g.textAlign='center';
+  const step=Math.max(1, Math.round(km.length/14));
+  km.forEach((k,i)=>{
+    const px=pad.l+i*bw+bw/2;
+    if(i%step===0 && px < W-pad.r-16*scale) g.fillText(k.km, px, H-pad.b/2);   // sin pisar «km»
+  });
+  g.textAlign='right'; g.fillText('km', W-pad.r, H-pad.b/2);
+}
+
+/* ---------- filtro cola / ambos / contra ---------- */
+const FCOL={all:'#6b7280', tail:'#00a5c4', head:'#ff1493'};
+
+function setFilter(f){
+  filter=f;
+  document.querySelectorAll('#filter button').forEach(x=>{
+    const on = x.dataset.f===filter;
+    x.classList.toggle('on',on);
+    x.style.background = on ? FCOL[x.dataset.f] : '';
+  });
+  if(lastRows){ drawTrack(lastRows); drawArrows(lastRows,lastSum); redrawChartIfVisible(); }
+}
+document.getElementById('filter').addEventListener('click', e=>{
+  const b=e.target.closest('button[data-f]'); if(!b) return;
+  setFilter(b.dataset.f);
+  saveState();
+});
+
+/* ============================================================
+   INFORME PDF
+   ============================================================ */
+const rgb = rel => windColor(rel).match(/\d+/g).map(Number);
+const hhmm = d => d.toTimeString().slice(0,5);
+
+function chartPNG(w, h, paint){
+  const cv=document.createElement('canvas');
+  cv.width=w*2; cv.height=h*2;
+  const g=cv.getContext('2d');
+  g.setTransform(2,0,0,2,0,0);
+  g.fillStyle='#fff'; g.fillRect(0,0,w,h);
+  paint(g,w,h);
+  return cv.toDataURL('image/png');
+}
+
+function buildPDF(){
+  if(!lastRows || !lastSum) return;
+  if(!window.jspdf){ setStatus('No se ha podido cargar la librería de PDF (¿sin conexión?).'); return; }
+  const rows=lastRows, s=lastSum, v=verdictOf(s), km=perKm(rows,s);
+  const doc=new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+  const M=14, PW=210, PH=297, CW=PW-M*2;
+  let y=0;
+
+  const need = h =>{ if(y+h>PH-16){ doc.addPage(); y=M; } };
+  const head = t =>{ need(12); y+=4;
+    doc.setFont('helvetica','bold').setFontSize(8).setTextColor(150,150,155);
+    doc.text(t.toUpperCase(), M, y); y+=1.6;
+    doc.setDrawColor(226,229,234).setLineWidth(.3).line(M,y,M+CW,y); y+=5; };
+
+  doc.setFillColor(254,96,0); doc.rect(0,0,PW,2.5,'F');
+  y=M+6;
+  doc.setFont('helvetica','bold').setFontSize(20).setTextColor(43,47,54);
+  doc.text('Informe de viento', M, y); y+=7;
+  doc.setFont('helvetica','normal').setFontSize(9.5).setTextColor(107,114,128);
+  doc.text(`${(s.total/1000).toFixed(1)} km · salida ${s.start.toLocaleDateString('es-ES')} a las ${hhmm(s.start)} · `+
+           `${s.speed} km/h de media · modelo ${document.getElementById('src').selectedOptions[0].text}`, M, y);
+  y+=4.2;
+  doc.setFontSize(8.5).setTextColor(150,150,155);
+  doc.text(`Viento consultado sobre el propio trazado: ${s.nAnchors} puntos repartidos por la ruta `+
+           `(uno cada ${(s.total/1000/s.nAnchors).toFixed(1)} km), cada uno a la hora prevista de paso.`, M, y);
+  y+=4;
+
+  head('Veredicto');
+  const vc=doc.getTextWidth(v.tag)+6;
+  const [vr,vg,vb]=v.color.match(/\w\w/g).map(h=>parseInt(h,16));
+  doc.setFillColor(vr,vg,vb); doc.roundedRect(M,y-3.4,vc,5.4,2.7,2.7,'F');
+  doc.setFont('helvetica','bold').setFontSize(8).setTextColor(255,255,255);
+  doc.text(v.tag, M+3, y); y+=7;
+  doc.setFont('helvetica','normal').setFontSize(9.5).setTextColor(43,47,54);
+  const vt=doc.splitTextToSize(v.txt, CW);
+  doc.text(vt, M, y); y+=vt.length*4.6+2;
+
+  head('Resumen');
+  const kv=[
+    ['Distancia', (s.total/1000).toFixed(2)+' km'],
+    ['Desnivel positivo', Math.round(s.gain)+' m'],
+    ['Tiempo en movimiento', `${Math.floor(s.dur/3600)}:${String(Math.round(s.dur%3600/60)).padStart(2,'0')} h`],
+    ['Viento medio', s.windAvg.toFixed(0)+' km/h'],
+    ['Racha máxima', s.gustMax.toFixed(0)+' km/h'],
+    ['Temperatura media', s.tempAvg.toFixed(1)+' °C'],
+    ['Prob. de lluvia máx.', Math.round(s.rainMax)+' %'],
+    ['Máx. viento en contra', s.maxHead.toFixed(0)+' km/h'],
+    ['Máx. viento lateral', s.maxCross.toFixed(0)+' km/h'],
+    ['Coste añadido por viento', (s.wImpact>0?'+':'')+s.wImpact.toFixed(1)+' %']
+  ];
+  const colW=CW/2, y0=y;
+  kv.forEach((p,i)=>{
+    const cx=M+(i%2)*colW, cy=y0+Math.floor(i/2)*5.6;
+    doc.setFont('helvetica','normal').setFontSize(9).setTextColor(107,114,128);
+    doc.text(p[0], cx, cy);
+    doc.setFont('helvetica','bold').setTextColor(43,47,54);
+    doc.text(p[1], cx+colW-4, cy, {align:'right'});
+    doc.setDrawColor(240,242,245).line(cx, cy+1.8, cx+colW-4, cy+1.8);
+  });
+  y=y0+Math.ceil(kv.length/2)*5.6+2;
+
+  need(14);
+  const segs=[['De cola',s.pTail,[0,229,255]],['Lateral',s.pCross,[160,32,240]],['En contra',s.pHead,[255,20,147]]];
+  let bx=M;
+  segs.forEach(([,pc,c])=>{ const w=CW*pc/100; doc.setFillColor(...c); doc.rect(bx,y,w,4,'F'); bx+=w; });
+  y+=8;
+  bx=M;
+  segs.forEach(([lb,pc,c])=>{
+    doc.setFillColor(...c); doc.circle(bx+1.2, y-1.4, 1.2, 'F');
+    doc.setFont('helvetica','normal').setFontSize(8.5).setTextColor(107,114,128);
+    doc.text(`${lb} ${pc.toFixed(0)}%`, bx+4, y); bx+=CW/3;
+  });
+  y+=3;
+
+  head('Kilómetros donde más va a afectar el viento');
+  const peores=[...km].sort((a,b)=>b.head-a.head).slice(0,10).filter(k=>k.head>0);
+  if(!peores.length){
+    doc.setFont('helvetica','normal').setFontSize(9.5).setTextColor(43,47,54);
+    doc.text('Ningún kilómetro con componente de viento en contra: toda la ruta va de cola o de lado.', M, y);
+    y+=6;
+  }else{
+    const cols=[[0,'km'],[16,'Paso'],[36,'En contra'],[62,'Lateral'],[84,'Viento'],[112,'Procede'],[140,'Ángulo']];
+    doc.setFont('helvetica','bold').setFontSize(7.5).setTextColor(150,150,155);
+    cols.forEach(([dx,t])=>doc.text(t.toUpperCase(), M+dx, y));
+    y+=1.6; doc.setDrawColor(226,229,234).line(M,y,M+CW,y); y+=4;
+    peores.forEach((k,i)=>{
+      need(6);
+      if(i%2){ doc.setFillColor(250,251,252); doc.rect(M-1.5, y-3.4, CW+3, 5.2, 'F'); }
+      const [r,g,b]=rgb(k.rel);
+      doc.setFillColor(r,g,b); doc.rect(M-1.5, y-3.4, 1.2, 5.2, 'F');
+      doc.setFont('helvetica','bold').setFontSize(9).setTextColor(43,47,54);
+      doc.text(`${k.km-1}–${k.km}`, M, y);
+      doc.setFont('helvetica','normal').setTextColor(90,96,105);
+      doc.text(hhmm(k.t),                        M+16, y);
+      doc.setFont('helvetica','bold').setTextColor(r,g,b);
+      doc.text(k.head.toFixed(0)+' km/h',         M+36, y);
+      doc.setFont('helvetica','normal').setTextColor(90,96,105);
+      doc.text(k.cross.toFixed(0)+' km/h',        M+62, y);
+      doc.text(`${k.speed.toFixed(0)} (${k.gust.toFixed(0)})`, M+84, y);
+      doc.text(cardinal(k.dir),                   M+112, y);
+      doc.text(Math.abs(k.rel).toFixed(0)+'°',    M+140, y);
+      y+=5.4;
+    });
+    doc.setFont('helvetica','italic').setFontSize(7.5).setTextColor(150,150,155);
+    y+=1; doc.text('Viento: media del kilómetro y racha máxima entre paréntesis. Ángulo: 0° = viento de frente.', M, y);
+    y+=4;
+  }
+
+  if(s.segments.length){
+    head('Tramos continuos a tener en cuenta');
+    const nombre={head:'En contra', cross:'Lateral', tail:'De cola'};
+    s.segments.slice(0,8).forEach((sg,i)=>{
+      need(6);
+      if(i%2){ doc.setFillColor(250,251,252); doc.rect(M-1.5, y-3.4, CW+3, 5.2, 'F'); }
+      const [r,g,b]=rgb(sg.rel);
+      doc.setFillColor(r,g,b); doc.rect(M-1.5, y-3.4, 1.2, 5.2, 'F');
+      doc.setFont('helvetica','bold').setFontSize(9).setTextColor(r,g,b);
+      doc.text(nombre[sg.c], M, y);
+      doc.setFont('helvetica','normal').setTextColor(43,47,54);
+      doc.text(`km ${(sg.from/1000).toFixed(1)} – ${(sg.to/1000).toFixed(1)}`, M+24, y);
+      doc.setTextColor(90,96,105);
+      doc.text(`${(sg.len/1000).toFixed(1)} km seguidos`, M+62, y);
+      doc.text(`${sg.avg.toFixed(0)} km/h de media`,      M+104, y);
+      y+=5.4;
+    });
+    y+=2;
+  }
+
+  const h1=44;
+  need(h1+10);
+  head('Viento a lo largo de la ruta');
+  doc.addImage(chartPNG(CW*3, h1*3, (g,w,hh)=>paintChart(g,w,hh,rows,s,'all',0.8)),
+    'PNG', M, y, CW, h1, undefined, 'FAST');
+  y+=h1+3.5;
+  doc.setFont('helvetica','italic').setFontSize(7.5).setTextColor(150,150,155);
+  doc.text('Barras: componente de viento en contra (arriba) y de cola (abajo). Línea naranja: viento lateral.', M, y);
+  y+=3;
+
+  const h2=44;
+  need(h2+10);
+  head('Componente de viento kilómetro a kilómetro');
+  doc.addImage(chartPNG(CW*3, h2*3, (g,w,hh)=>paintKmChart(g,w,hh,km,0.8)),
+    'PNG', M, y, CW, h2, undefined, 'FAST');
+  y+=h2+3.5;
+  doc.setFont('helvetica','italic').setFontSize(7.5).setTextColor(150,150,155);
+  doc.text('Cada barra es un kilómetro completo de la ruta, con su color según el ángulo del viento.', M, y);
+
+  const n=doc.getNumberOfPages();
+  for(let p=1;p<=n;p++){
+    doc.setPage(p);
+    doc.setDrawColor(226,229,234).setLineWidth(.3).line(M, PH-12, PW-M, PH-12);
+    doc.setFont('helvetica','normal').setFontSize(7.5).setTextColor(150,150,155);
+    doc.text(`WindRanger · datos de Open-Meteo · generado el ${new Date().toLocaleString('es-ES')}`, M, PH-8);
+    doc.text(`${p} / ${n}`, PW-M, PH-8, {align:'right'});
+  }
+
+  const f=s.start;
+  doc.save(`informe-viento-${f.getFullYear()}-${String(f.getMonth()+1).padStart(2,'0')}-${String(f.getDate()).padStart(2,'0')}.pdf`);
+}
+
+document.getElementById('pdf').addEventListener('click', ()=>{
+  try{ buildPDF(); setStatus('Informe PDF descargado.'); }
+  catch(e){ setStatus('No se pudo generar el PDF: '+e.message); console.error(e); }
+});
+
+/* ---------- pantalla completa ---------- */
+const btnFull=document.getElementById('btnFull');
+const fsEl = ()=> document.fullscreenElement || document.webkitFullscreenElement;
+btnFull.addEventListener('click', ()=>{
+  const root=document.documentElement;
+  if(fsEl()){
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }else{
+    const req = root.requestFullscreen || root.webkitRequestFullscreen;
+    if(!req){ setStatus('Tu navegador no permite pantalla completa aquí.'); return; }
+    Promise.resolve(req.call(root))
+      .then(()=>toast('Pantalla completa. Vuelve a pulsar el mismo botón (o «atrás») para salir.'))
+      .catch(err=>setStatus('No se pudo entrar en pantalla completa: '+err.message));
+  }
+  closeLayers();
+});
+['fullscreenchange','webkitfullscreenchange'].forEach(ev=>
+  document.addEventListener(ev, ()=>{
+    const on=!!fsEl();
+    btnFull.classList.toggle('on',on);
+    btnFull.title = on ? 'Salir de pantalla completa' : 'Pantalla completa';
+    // la ventana cambia de alto: hoja, mapa y gráfica hay que recolocarlos
+    setTimeout(()=>{ measureSheet(); applyMode(false); }, 250);
+  }));
+
+/* ============================================================
+   GUARDADO EN EL NAVEGADOR
+   Misma clave y mismo formato que la versión de escritorio: la ruta y el
+   viento ya consultado se comparten entre las dos.
+   ============================================================ */
+const STORE='windranger.state.v1';
+const el = id => document.getElementById(id);
+
+function saveState(){
+  if(!pts.length) return;
+  const c=map.getCenter();
+  const base={
+    v:1,
+    name: gpxName,
+    inp:{ date:el('date').value, time:el('time').value, speed:el('speed').value, src:el('src').value },
+    ui:{ base:baseId, filter, rose:roseOn, snap:snapIdx, tab:activeTab(), mode:viewMode,
+         zoom:zoomLock, view:[+c.lat.toFixed(5), +c.lng.toFixed(5), map.getZoom()] }
+  };
+  let wAll=null;
+  if(lastRows){
+    wAll=new Array(pts.length).fill(null);
+    lastRows.forEach(r=> wAll[r.i]=[+r.windDir.toFixed(1), +r.windSpeed.toFixed(1),
+                                    +r.gust.toFixed(1), +r.temp.toFixed(1), Math.round(r.rain||0)]);
+  }
+
+  // Si no cabe, se guarda la ruta aligerada antes que perderla: al refrescar
+  // siempre tiene que seguir ahí el GPX, aunque sea con menos puntos.
+  const ultimo = pts.length-1;
+  const comprime = (arr, paso) => arr.filter((_,i)=> i%paso===0 || i===arr.length-1)
+                                     .map(p=>[+p.lat.toFixed(5), +p.lon.toFixed(5),
+                                              p.ele==null?null:Math.round(p.ele)]);
+  for(const paso of [1,2,4,8,16,32]){
+    const dej = i => i%paso===0 || i===ultimo;
+    const st = Object.assign({}, base, {
+      pts: pts.filter((_,i)=>dej(i)).map(p=>[+p.lat.toFixed(5), +p.lon.toFixed(5),
+                                             p.ele==null?null:Math.round(p.ele)]),
+      w:   wAll ? wAll.filter((_,i)=>dej(i)) : null,
+      // las demás capas GPX; la activa ya va en `pts`, no se duplica
+      tracks: tracks.map(t=>({ name:t.name, color:t.color, on:t.on, act:t.id===activeId,
+                               pts: t.id===activeId ? null : comprime(t.pts, paso) }))
+    });
+    try{
+      localStorage.setItem(STORE, JSON.stringify(st));
+      if(paso>1) setStatus(`La ruta no cabía entera en el navegador: se ha guardado aligerada `+
+                           `(1 de cada ${paso} puntos) para que siga aquí al refrescar.`);
+      return;
+    }catch(e){ /* demasiado grande: se reintenta con menos puntos */ }
+  }
+  setStatus('No se ha podido guardar la ruta en este navegador: sin espacio, o el almacenamiento '+
+            'está bloqueado (ventana privada o abierto como archivo suelto).');
+}
+
+function restoreState(){
+  let st;
+  try{ st=JSON.parse(localStorage.getItem(STORE)||'null'); }catch(e){ return false; }
+  if(!st || st.v!==1 || !Array.isArray(st.pts) || !st.pts.length) return false;
+
+  if(st.inp){ el('date').value=st.inp.date; el('time').value=st.inp.time;
+              el('speed').value=st.inp.speed; el('src').value=st.inp.src; }
+  if(st.ui){
+    setBase(st.ui.base);
+    if(st.ui.rose===false){ roseOn=false; el('rose').style.display='none'; }
+    if(st.ui.filter && st.ui.filter!=='all') setFilter(st.ui.filter);
+    if(st.ui.tab) goTab(st.ui.tab);
+    if(typeof st.ui.mode==='number'){ viewMode=st.ui.mode; applyMode(false); }
+  }
+
+  // capas GPX: la activa viene en st.pts y las demás con sus propios puntos
+  const puntosAct = st.pts.map(([lat,lon,ele])=>({lat,lon,ele}));
+  if(Array.isArray(st.tracks) && st.tracks.length){
+    st.tracks.forEach(t=>{
+      const arr = t.act ? puntosAct
+                        : (t.pts||[]).map(([lat,lon,ele])=>({lat,lon,ele}));
+      if(!arr.length) return;
+      if(tracks.some(x=>x.name===t.name)) return;      // sin repetir nombres
+      const nuevo={ id:++trkSeq, name:t.name||'ruta.gpx', pts:arr,
+                    on:t.on!==false, color:t.color||TRK_COLS[tracks.length%TRK_COLS.length] };
+      tracks.push(nuevo);
+      if(t.act) activeId=nuevo.id;
+    });
+    if(activeId==null && tracks.length) activeId=tracks[0].id;
+    const act=activeTrack();
+    gpxName=act ? act.name : (st.name||'');
+    setPoints(act ? act.pts : puntosAct, !st.ui || !st.ui.view);
+    if(act) act.pts=pts;
+    drawRefs(); renderTrackList();
+  }else{
+    gpxName = st.name||'';
+    addTrack(gpxName||'ruta.gpx', puntosAct, true);   // estados antiguos: una sola ruta
+  }
+  if(st.ui && st.ui.view) map.setView([st.ui.view[0], st.ui.view[1]], st.ui.view[2]);
+  if(st.ui && typeof st.ui.zoom==='number') applyZoomLock(st.ui.zoom, true);
+  // red de seguridad: si la vista guardada dejó la ruta fuera de pantalla, se encuadra
+  if(pts.length && !map.getBounds().intersects(L.latLngBounds(pts.map(p=>[p.lat,p.lon])))) fitRoute();
+
+  if(st.w){
+    const start=new Date(st.inp.date+'T'+st.inp.time), speed=+st.inp.speed;
+    if(!isNaN(start) && speed>0){
+      const rows=buildRows(start, speed, i=>{
+        const w=st.w[i];
+        return w ? {dir:w[0], speed:w[1], gust:w[2], temp:w[3], rain:w[4]} : null;
+      });
+      if(rows.length){
+        analysis=summarize(rows, speed, pts.at(-1).d, start);
+        render(rows, analysis);
+        setStatus(`${gpxName?'«'+gpxName+'»: ':''}${(analysis.total/1000).toFixed(1)} km ya analizados, `+
+                  `recuperados del navegador. Pulsa «Analizar viento» para actualizar la previsión.`);
+        if(st.ui && typeof st.ui.snap==='number') setSnap(st.ui.snap, false, false);
+        return true;
+      }
+    }
+  }
+  setStatus(`${tracks.length>1 ? tracks.length+' capas GPX recuperadas' : 'Ruta recuperada'} `+
+            `del navegador: ${(pts.at(-1).d/1000).toFixed(1)} km en «${gpxName}». Listo para analizar.`);
+  if(st.ui && typeof st.ui.snap==='number') setSnap(st.ui.snap, false, false);
+  return true;
+}
+
+el('reset').addEventListener('click', ()=>{
+  if(!confirm('Se borrará la ruta y el análisis guardados en este navegador. ¿Continuar?')) return;
+  try{ localStorage.removeItem(STORE); }catch(e){}
+  location.reload();
+});
+
+['date','time','speed','src'].forEach(id=> el(id).addEventListener('change', saveState));
+let viewTimer;
+map.on('moveend zoomend', ()=>{ clearTimeout(viewTimer); viewTimer=setTimeout(saveState, 800); });
+
+/* la barra del navegador aparece y desaparece: recolocar hoja, mapa y gráfico */
+let rzTimer;
+function onResize(){
+  clearTimeout(rzTimer);
+  rzTimer=setTimeout(()=>{ measureSheet(); applyMode(false); }, 120);
+}
+addEventListener('resize', onResize);
+addEventListener('orientationchange', onResize);
+if(window.visualViewport) visualViewport.addEventListener('resize', onResize);
+
+/* ============================================================
+   INSTALACIÓN EN EL MÓVIL
+   Con el manifiesto y este service worker, Chrome ofrece «Instalar aplicación»
+   y queda un icono en la pantalla de inicio. Requiere servirlo por http(s):
+   abierto como archivo suelto (file://) el navegador no permite instalarlo.
+   ============================================================ */
+if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  addEventListener('load', ()=> navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+
+let installPrompt=null;
+const btnInstall=document.getElementById('install');
+addEventListener('beforeinstallprompt', e=>{
+  e.preventDefault();
+  installPrompt=e;
+  btnInstall.style.display='';
+  document.getElementById('installHint').style.display='none';
+});
+btnInstall.addEventListener('click', async ()=>{
+  if(!installPrompt) return;
+  installPrompt.prompt();
+  const {outcome} = await installPrompt.userChoice;
+  installPrompt=null;
+  btnInstall.style.display='none';
+  if(outcome==='accepted') setStatus('WindRanger instalado: ya tienes el icono en la pantalla de inicio.');
+});
+addEventListener('appinstalled', ()=>{ btnInstall.style.display='none';
+  document.getElementById('installHint').style.display='none'; });
+
+// si no salta el aviso automático (iOS, o ya instalada), al menos explicamos cómo
+addEventListener('load', ()=> setTimeout(()=>{
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if(!installPrompt && !standalone && location.protocol.startsWith('http'))
+    document.getElementById('installHint').style.display='';
+}, 2500));
+
+/* ============================================================
+   BOTONES QUE SE RETIRAN SOLOS
+   A los 10 segundos sin tocar nada, los botones flotantes se desvanecen para
+   dejar el mapa despejado. Vuelven con dos toques rápidos en cualquier sitio;
+   mientras están ocultos no estorban: los toques sueltos van al mapa.
+   ============================================================ */
+const OCULTAR_MS = 10000;
+let ocultarT=null, avisoOculto=false;
+const estaOculto = ()=> document.body.classList.contains('oculto');
+
+function programarOcultar(){
+  clearTimeout(ocultarT);
+  ocultarT=setTimeout(()=>{
+    // si hay un desplegable abierto, se espera otro turno
+    if(layersPop.classList.contains('on') || zoomCtl.classList.contains('open')) return programarOcultar();
+    document.body.classList.add('oculto');
+    if(!avisoOculto){
+      avisoOculto=true;
+      toast('Botones ocultos para ver bien el mapa. Toca dos veces la pantalla para recuperarlos.', 4200);
+    }
+  }, OCULTAR_MS);
+}
+function mostrarBotones(){
+  document.body.classList.remove('oculto');
+  programarOcultar();
+}
+
+// cualquier gesto reinicia la cuenta atrás
+['pointerdown','keydown','wheel'].forEach(ev=>
+  document.addEventListener(ev, ()=>{ if(!estaOculto()) programarOcultar(); },
+                            {passive:true, capture:true}));
+map.on('movestart zoomstart', ()=>{ if(!estaOculto()) programarOcultar(); });
+
+// doble toque rápido: los devuelve sin que el mapa se entere del gesto
+let ultimoTap=0;
+document.addEventListener('pointerdown', e=>{
+  if(!estaOculto()) return;
+  const ahora=Date.now();
+  if(ahora-ultimoTap < 420){
+    ultimoTap=0;
+    e.preventDefault(); e.stopPropagation();
+    mostrarBotones();
+  }else ultimoTap=ahora;
+}, {capture:true});
+
+/* ---------- arranque ---------- */
+measureSheet();
+setSnap(0, false, false);
+applyMode(false);
+applyZoomLock(null, true);
+restoreState();
+updatePeek();
+programarOcultar();
+// al terminar de cargar (tipografías, hojas de estilo) las alturas ya son las buenas
+addEventListener('load', ()=>{ measureSheet(); applyMode(false); });
+</script>
+</body>
+</html>
